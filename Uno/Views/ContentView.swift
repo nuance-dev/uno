@@ -20,7 +20,7 @@ struct ContentView: View {
             VisualEffectBlur(material: .headerView, blendingMode: .behindWindow)
                 .ignoresSafeArea()
             
-            VStack(spacing: 24) {
+            VStack(spacing: 10) {
                 modeSwitcher
                 mainContent
             }

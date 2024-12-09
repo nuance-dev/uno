@@ -50,10 +50,10 @@ struct ProcessingView: View {
     }
     
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 10) {
             HStack {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 4) {
                         ForEach(processor.files, id: \.self) { url in
                             FileTag(url: url) {
                                 withAnimation(.spring(response: 0.3)) {
