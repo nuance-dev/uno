@@ -2,9 +2,9 @@ import SwiftUI
 import PDFKit
 import os
 
-private let logger = Logger(subsystem: "me.nuanc.Uno", category: "ProcessingView")
+private let logger = Logger(subsystem: "me.nuanc.Uno", category: "ProcessedView")
 
-struct ProcessingView: View {
+struct ProcessedView: View {
     @ObservedObject var processor: FileProcessor
     let mode: ContentView.Mode
     @State private var isCopied = false

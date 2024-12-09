@@ -78,7 +78,7 @@ struct ContentView: View {
                     handleFileSelection()
                 }
             } else {
-                ProcessingView(processor: processor, mode: mode)
+                ProcessedView(processor: processor, mode: mode)
             }
             
             if processor.isProcessing {
