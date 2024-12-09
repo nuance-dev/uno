@@ -8,23 +8,35 @@ struct ProcessingView: View {
     @ObservedObject var processor: FileProcessor
     let mode: ContentView.Mode
     @State private var isCopied = false
+    @State private var showingClearConfirmation = false
     
     var body: some View {
         VStack(spacing: 20) {
-            // Files List with improved design
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(processor.files, id: \.self) { url in
-                        FileTag(url: url) {
-                            withAnimation(.spring(response: 0.3)) {
-                                if let index = processor.files.firstIndex(of: url) {
-                                    processor.files.remove(at: index)
+            HStack {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(processor.files, id: \.self) { url in
+                            FileTag(url: url) {
+                                withAnimation(.spring(response: 0.3)) {
+                                    if let index = processor.files.firstIndex(of: url) {
+                                        processor.files.remove(at: index)
+                                    }
                                 }
                             }
                         }
                     }
+                    .padding(.horizontal)
                 }
-                .padding(.horizontal)
+                
+                Button(action: {
+                    showingClearConfirmation = true
+                }) {
+                    Image(systemName: "trash")
+                        .foregroundColor(.red.opacity(0.8))
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(GlassButtonStyle())
+                .help("Clear all files")
             }
             .frame(height: 32)
             
@@ -35,10 +47,19 @@ struct ProcessingView: View {
                 PDFPreviewView(pdfDocument: processor.processedPDF)
             }
             
-            // Error Display
             if let error = processor.error {
                 ErrorBanner(message: error)
             }
+        }
+        .alert("Clear Files", isPresented: $showingClearConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Clear", role: .destructive) {
+                withAnimation(.spring(response: 0.3)) {
+                    processor.clearFiles()
+                }
+            }
+        } message: {
+            Text("Are you sure you want to clear all files?")
         }
     }
 }
@@ -211,13 +232,31 @@ struct PDFKitView: NSViewRepresentable {
         let pdfView = PDFKit.PDFView()
         pdfView.document = pdfDocument
         pdfView.autoScales = true
-        pdfView.displayMode = .singlePage
+        pdfView.displayMode = .singlePageContinuous
         pdfView.backgroundColor = .clear
+        pdfView.displaysPageBreaks = true
+        pdfView.displayDirection = .vertical
+        
+        // Configure scrolling behavior
+        pdfView.maxScaleFactor = 4.0
+        pdfView.minScaleFactor = 0.25
+        pdfView.pageShadowsEnabled = false
+        
+        // Enable continuous scrolling
+        if let scrollView = pdfView.documentView?.enclosingScrollView {
+            scrollView.hasVerticalScroller = true
+            scrollView.scrollerStyle = .overlay
+        }
+        
         return pdfView
     }
     
     func updateNSView(_ pdfView: PDFKit.PDFView, context: Context) {
         pdfView.document = pdfDocument
+        
+        // Ensure proper layout
+        pdfView.needsLayout = true
+        pdfView.layoutDocumentView()
     }
 }
 

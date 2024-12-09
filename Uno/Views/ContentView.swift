@@ -27,9 +27,11 @@ struct ContentView: View {
             .padding(30)
         }
         .frame(minWidth: 600, minHeight: 700)
+        .onChange(of: mode) { newMode in
+            processor.setMode(newMode)
+        }
         .onDrop(of: [.fileURL], isTargeted: $isDragging) { providers in
             let success = handleDroppedFiles(providers)
-            logger.debug("File drop handling completed: \(success ? "success" : "failed")")
             return success
         }
     }

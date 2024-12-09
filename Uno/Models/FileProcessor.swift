@@ -22,6 +22,7 @@ class FileProcessor: ObservableObject {
     @Published var processedPDF: PDFDocument?
     @Published var error: String?
     @Published var progress: Double = 0
+    @Published private(set) var lastProcessedFiles: [URL] = []
     
     let supportedTypes = [
         // Code files
@@ -53,30 +54,11 @@ class FileProcessor: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             
-            // Sort files by name for consistent output
             let sortedFiles = self.files.sorted { $0.lastPathComponent < $1.lastPathComponent }
             
             // Validate files
             for url in sortedFiles {
-                do {
-                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-                    let fileSize = attributes[.size] as? Int64 ?? 0
-                    
-                    if fileSize > self.maxFileSize {
-                        DispatchQueue.main.async {
-                            self.error = "File too large: \(url.lastPathComponent)"
-                            self.isProcessing = false
-                        }
-                        return
-                    }
-                } catch {
-                    logger.error("Error accessing file: \(error.localizedDescription)")
-                    DispatchQueue.main.async {
-                        self.error = "Error accessing file: \(url.lastPathComponent)"
-                        self.isProcessing = false
-                    }
-                    return
-                }
+                if !self.validateFile(url) { return }
             }
             
             switch mode {
@@ -245,9 +227,35 @@ class FileProcessor: ObservableObject {
     }
     
     func setMode(_ mode: ContentView.Mode) {
-        currentMode = mode
-        if !files.isEmpty {
+        if currentMode != mode && !files.isEmpty {
+            lastProcessedFiles = files
+            currentMode = mode
             processFiles(mode: mode)
+        } else {
+            currentMode = mode
+        }
+    }
+    
+    private func validateFile(_ url: URL) -> Bool {
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            let fileSize = attributes[.size] as? Int64 ?? 0
+            
+            if fileSize > maxFileSize {
+                DispatchQueue.main.async {
+                    self.error = "File too large: \(url.lastPathComponent)"
+                    self.isProcessing = false
+                }
+                return false
+            }
+            return true
+        } catch {
+            logger.error("Error accessing file: \(error.localizedDescription)")
+            DispatchQueue.main.async {
+                self.error = "Error accessing file: \(url.lastPathComponent)"
+                self.isProcessing = false
+            }
+            return false
         }
     }
 } 
