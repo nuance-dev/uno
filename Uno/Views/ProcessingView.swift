@@ -9,6 +9,9 @@ struct ProcessingView: View {
     let mode: ContentView.Mode
     @State private var isCopied = false
     @State private var showingClearConfirmation = false
+    @State private var showError = false
+    @State private var errorMessage = ""
+    @State private var zoomLevel: Double = 1.0
     
     var clearButton: some View {
         Button(action: {
@@ -77,7 +80,7 @@ struct ProcessingView: View {
             if mode == .prompt {
                 PromptView(content: processor.processedContent, isCopied: $isCopied)
             } else {
-                PDFPreviewView(pdfDocument: processor.processedPDF)
+                PDFPreviewView(processor: processor, pdfDocument: processor.processedPDF)
             }
             
             if let error = processor.error {
@@ -286,10 +289,12 @@ struct PDFKitView: NSViewRepresentable {
 }
 
 struct PDFPreviewView: View {
+    @ObservedObject var processor: FileProcessor
     let pdfDocument: PDFKit.PDFDocument?
     @State private var showError: Bool = false
     @State private var errorMessage: String = ""
     @State private var zoomLevel: CGFloat = 1.0
+    @State private var isSaving: Bool = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -358,14 +363,6 @@ struct PDFPreviewView: View {
                 EmptyStateView()
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(NSColor.controlBackgroundColor).opacity(0.7))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.primary.opacity(0.05), lineWidth: 1)
-                )
-        )
         .alert("Error Saving PDF", isPresented: $showError) {
             Button("OK", role: .cancel) { }
         } message: {
@@ -374,19 +371,38 @@ struct PDFPreviewView: View {
     }
     
     private func savePDF() {
-        guard let pdfDocument = pdfDocument else { return }
-        
         let savePanel = NSSavePanel()
         savePanel.allowedContentTypes = [.pdf]
         savePanel.nameFieldStringValue = "Merged.pdf"
         
         savePanel.begin { response in
-            if response == .OK, let url = savePanel.url {
-                do {
+            guard response == .OK, let url = savePanel.url else { return }
+            
+            do {
+                if let pdfDocument = self.pdfDocument {
                     try pdfDocument.write(to: url)
-                } catch {
-                    errorMessage = error.localizedDescription
-                    showError = true
+                    
+                    // Show success feedback
+                    DispatchQueue.main.async {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                        
+                        // Optional: Show success notification
+                        let notification = NSUserNotification()
+                        notification.title = "PDF Saved"
+                        notification.informativeText = "Your PDF has been saved successfully"
+                        NSUserNotificationCenter.default.deliver(notification)
+                    }
+                } else {
+                    throw NSError(
+                        domain: "PDFError",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "No PDF document available"]
+                    )
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.showError = true
+                    self.errorMessage = "Failed to save PDF: \(error.localizedDescription)"
                 }
             }
         }

@@ -77,6 +77,11 @@ class FileProcessor: ObservableObject {
         for (index, url) in files.enumerated() {
             autoreleasepool {
                 do {
+                    // Update progress more frequently
+                    DispatchQueue.main.async {
+                        self.progress = Double(index) / totalFiles
+                    }
+                    
                     if url.pathExtension.lowercased() == "pdf" {
                         if let pdf = PDFDocument(url: url),
                            let text = pdf.string {
@@ -87,6 +92,7 @@ class FileProcessor: ObservableObject {
                         result += "<\(url.lastPathComponent)>\n\(content)\n</\(url.lastPathComponent)>\n\n"
                     }
                     
+                    // Final progress update
                     DispatchQueue.main.async {
                         self.progress = Double(index + 1) / totalFiles
                     }
@@ -182,37 +188,76 @@ class FileProcessor: ObservableObject {
         do {
             let content = try String(contentsOf: url, encoding: .utf8)
             
+            // Create attributed string with improved formatting
+            let style = NSMutableParagraphStyle()
+            style.lineSpacing = 2
+            style.paragraphSpacing = 10
+            
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
-                .foregroundColor: NSColor.textColor
+                .foregroundColor: NSColor.black,
+                .paragraphStyle: style,
+                .backgroundColor: NSColor.clear
             ]
             
             let attributedString = NSAttributedString(string: content, attributes: attributes)
-            let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792)
+            
+            // Create PDF page
+            let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792) // US Letter
             let pdfData = NSMutableData()
             
-            guard let context = CGContext(consumer: CGDataConsumer(data: pdfData as CFMutableData)!,
-                                        mediaBox: nil,
-                                        nil) else { return nil }
+            guard let consumer = CGDataConsumer(data: pdfData as CFMutableData) else { return nil }
             
-            context.beginPDFPage(nil)
+            // Create PDF context with white background
+            var mediaBox = CGRect(origin: .zero, size: pageRect.size)
             
-            let frameSetter = CTFramesetterCreateWithAttributedString(attributedString)
-            let path = CGPath(rect: CGRect(x: 36, y: 36, width: 540, height: 720), transform: nil)
-            let frame = CTFramesetterCreateFrame(frameSetter, CFRangeMake(0, 0), path, nil)
+            guard let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+                return nil
+            }
             
-            context.translateBy(x: 0, y: pageRect.height)
-            context.scaleBy(x: 1.0, y: -1.0)
+            // Start PDF page
+            context.beginPage(mediaBox: &mediaBox)
             
+            // Fill white background explicitly
+            context.setFillColor(CGColor(gray: 1.0, alpha: 1.0))
+            context.fill(mediaBox)
+            
+            // Add header with file info
+            let headerAttributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 10, weight: .medium),
+                .foregroundColor: NSColor.darkGray
+            ]
+            
+            let headerText = "\(url.lastPathComponent)"
+            let headerString = NSAttributedString(string: headerText, attributes: headerAttributes)
+            
+            // Draw header
+            let headerRect = CGRect(x: 50, y: pageRect.height - 40, width: pageRect.width - 100, height: 20)
+            
+            // Create content frame
+            let contentRect = CGRect(x: 50, y: 50, width: pageRect.width - 100, height: pageRect.height - 100)
+            let path = CGPath(rect: contentRect, transform: nil)
+            
+            // Draw content
+            let framesetter = CTFramesetterCreateWithAttributedString(attributedString)
+            let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: 0), path, nil)
+            
+            // Draw header (in correct orientation)
+            context.saveGState()
+            context.textMatrix = .identity
+            headerString.draw(in: headerRect)
+            context.restoreGState()
+            
+            // Draw main content
+            context.saveGState()
             CTFrameDraw(frame, context)
+            context.restoreGState()
             
-            context.endPDFPage()
+            context.endPage()
             context.closePDF()
             
-            guard let pdfDocument = PDFDocument(data: pdfData as Data),
-                  let page = pdfDocument.page(at: 0) else { return nil }
-            
-            return page
+            guard let pdfDocument = PDFDocument(data: pdfData as Data) else { return nil }
+            return pdfDocument.page(at: 0)
         } catch {
             logger.error("Error creating PDF page: \(error.localizedDescription)")
             return nil
