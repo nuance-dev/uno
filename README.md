@@ -1,4 +1,4 @@
-# Uno - A macOS file merger to PDF and prompt
+# Uno - A macOS file merger to prompt or PDF
 
 A sleek, native macOS app that transforms files into unified prompts or merges them into PDFs. Perfect for preparing training data or combining documents.
 
