@@ -10,6 +10,45 @@ struct ProcessingView: View {
     @State private var isCopied = false
     @State private var showingClearConfirmation = false
     
+    var clearButton: some View {
+        Button(action: {
+            showingClearConfirmation = true
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: "trash")
+                Text("Clear All")
+                    .font(.system(size: 13, weight: .medium))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.red.opacity(0.1))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.red.opacity(0.2), lineWidth: 1)
+            )
+            .foregroundColor(.red)
+        }
+        .buttonStyle(PlainButtonStyle())
+        .help("Clear all files")
+        .confirmationDialog(
+            "Clear All Files",
+            isPresented: $showingClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Clear All", role: .destructive) {
+                withAnimation(.spring(response: 0.3)) {
+                    processor.clearFiles()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Are you sure you want to clear all files? This action cannot be undone.")
+        }
+    }
+    
     var body: some View {
         VStack(spacing: 20) {
             HStack {
@@ -28,17 +67,11 @@ struct ProcessingView: View {
                     .padding(.horizontal)
                 }
                 
-                Button(action: {
-                    showingClearConfirmation = true
-                }) {
-                    Image(systemName: "trash")
-                        .foregroundColor(.red.opacity(0.8))
-                        .frame(width: 32, height: 32)
+                if !processor.files.isEmpty {
+                    clearButton
                 }
-                .buttonStyle(GlassButtonStyle())
-                .help("Clear all files")
             }
-            .frame(height: 32)
+            .frame(height: 40)
             
             // Result View
             if mode == .prompt {
@@ -50,16 +83,6 @@ struct ProcessingView: View {
             if let error = processor.error {
                 ErrorBanner(message: error)
             }
-        }
-        .alert("Clear Files", isPresented: $showingClearConfirmation) {
-            Button("Cancel", role: .cancel) { }
-            Button("Clear", role: .destructive) {
-                withAnimation(.spring(response: 0.3)) {
-                    processor.clearFiles()
-                }
-            }
-        } message: {
-            Text("Are you sure you want to clear all files?")
         }
     }
 }
@@ -237,15 +260,18 @@ struct PDFKitView: NSViewRepresentable {
         pdfView.displaysPageBreaks = true
         pdfView.displayDirection = .vertical
         
-        // Configure scrolling behavior
+        // Improve default sizing
+        pdfView.scaleFactor = pdfView.scaleFactorForSizeToFit
         pdfView.maxScaleFactor = 4.0
         pdfView.minScaleFactor = 0.25
-        pdfView.pageShadowsEnabled = false
         
-        // Enable continuous scrolling
+        // Enable smooth scrolling
         if let scrollView = pdfView.documentView?.enclosingScrollView {
             scrollView.hasVerticalScroller = true
             scrollView.scrollerStyle = .overlay
+            
+            // Set content insets for better presentation
+            scrollView.contentInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
         }
         
         return pdfView
@@ -253,8 +279,7 @@ struct PDFKitView: NSViewRepresentable {
     
     func updateNSView(_ pdfView: PDFKit.PDFView, context: Context) {
         pdfView.document = pdfDocument
-        
-        // Ensure proper layout
+        pdfView.scaleFactor = pdfView.scaleFactorForSizeToFit
         pdfView.needsLayout = true
         pdfView.layoutDocumentView()
     }

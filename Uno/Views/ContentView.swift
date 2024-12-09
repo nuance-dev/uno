@@ -27,12 +27,11 @@ struct ContentView: View {
             .padding(30)
         }
         .frame(minWidth: 600, minHeight: 700)
-        .onChange(of: mode) { newMode in
+        .onChange(of: mode, initial: true) { oldValue, newMode in
             processor.setMode(newMode)
         }
         .onDrop(of: [.fileURL], isTargeted: $isDragging) { providers in
-            let success = handleDroppedFiles(providers)
-            return success
+            handleDroppedFiles(providers)
         }
     }
     
