@@ -1,5 +1,8 @@
 import SwiftUI
 import PDFKit
+import os
+
+private let logger = Logger(subsystem: "me.nuanc.Uno", category: "ProcessingView")
 
 struct ProcessingView: View {
     @ObservedObject var processor: FileProcessor
@@ -220,6 +223,8 @@ struct PDFKitView: NSViewRepresentable {
 
 struct PDFPreviewView: View {
     let pdfDocument: PDFKit.PDFDocument?
+    @State private var showError: Bool = false
+    @State private var errorMessage: String = ""
     
     var body: some View {
         VStack(spacing: 0) {
@@ -269,6 +274,11 @@ struct PDFPreviewView: View {
                         .stroke(Color.primary.opacity(0.05), lineWidth: 1)
                 )
         )
+        .alert("Error Saving PDF", isPresented: $showError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(errorMessage)
+        }
     }
     
     private func savePDF() {
@@ -279,8 +289,14 @@ struct PDFPreviewView: View {
         savePanel.nameFieldStringValue = "Merged.pdf"
         
         savePanel.begin { response in
-            if response == .OK, let url = savePanel.url {
-                try? pdf.write(to: url)
+            guard response == .OK,
+                  let url = savePanel.url else { return }
+            
+            do {
+                try pdf.dataRepresentation()?.write(to: url)
+            } catch {
+                errorMessage = error.localizedDescription
+                showError = true
             }
         }
     }
