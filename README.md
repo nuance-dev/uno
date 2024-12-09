@@ -1,4 +1,4 @@
-# Uno - A macOS Native File Splitter & Joiner
+# Uno - A macOS file merger to PDF and prompt
 
 A sleek, native macOS app that transforms files into unified prompts or merges them into PDFs. Perfect for preparing training data or combining documents.
 
