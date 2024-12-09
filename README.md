@@ -1,6 +1,6 @@
 # Uno - A macOS Native File Splitter & Joiner
 
-A sleek, free native macOS app that splits files into three encrypted pieces and lets you join them back together. Perfect for securely sharing sensitive files across different channels.
+A sleek, native macOS app that transforms files into unified prompts or merges them into PDFs. Perfect for preparing training data or combining documents.
 
 Note: This app requires macOS version 14+
 
@@ -8,11 +8,14 @@ Note: This app requires macOS version 14+
 
 ## Features
 
-- **Split Files**: Break any file into 3 encrypted pieces
-- **Join Files**: Easily combine the pieces back into the original file
-- **Multiple Input Methods**: Drag & drop, paste (⌘V), or click to upload
-- **Native Performance**: Built with SwiftUI for optimal processing
-- **Dark and Light modes**: Automatically matches your system theme
+- **Prompt Mode**: Convert files into a single, structured prompt
+  - Supports multiple file types (.pdf, .swift, .ts, .js, .html, .css, etc.)
+  - Maintains file structure in output
+  - Folder support for batch processing
+- **PDF Mode**: Merge multiple files into a single PDF
+  - Smart conversion of non-PDF files
+  - Maintains document order
+  - Preview support
 
 https://github.com/user-attachments/assets/ea628ef4-4e09-498a-ad5c-2a093028c669
 
@@ -29,18 +32,6 @@ Download from the [releases](https://github.com/nuance-dev/Uno/releases/) page.
   - **Standard Mode**: Basic file splitting with LZFSE compression
   - **Secure Mode**: Adds military-grade encryption to each piece
 - Perfect for distributing sensitive files across different channels
-
-### How Secure Mode Works
-
-- Each piece is independently encrypted using AES-GCM
-- Keys are derived using HKDF with SHA-256
-- Unique salt generated for each piece
-- Key material is derived from the original file's hash
-- Without all three pieces and the original file hash, decryption is computationally infeasible
-
-## 🥑 Fun facts
-
-- Yes this app can be used to host the best treasure hunt of all time
 
 ## 🤝 Contributing
 

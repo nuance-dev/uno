@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DropZoneView: View {
     @Binding var isDragging: Bool
+    let mode: ContentView.Mode
     let onTap: () -> Void
     
     var body: some View {
@@ -11,9 +12,17 @@ struct DropZoneView: View {
                     .font(.system(size: 50))
                     .foregroundColor(.secondary)
                 
-                Text("Click or drop a file to split or 3 files to mend")
+                Text(mode == .prompt ? 
+                     "Drop files or folders to create a prompt" :
+                     "Drop files to create a PDF")
                     .font(.title3)
                     .foregroundColor(.secondary)
+                
+                Text(mode == .prompt ?
+                     "Supports: .swift, .ts, .js, .html, .css, etc." :
+                     "Supports: Most text files and PDFs")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary.opacity(0.8))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(
