@@ -289,6 +289,7 @@ struct PDFPreviewView: View {
     let pdfDocument: PDFKit.PDFDocument?
     @State private var showError: Bool = false
     @State private var errorMessage: String = ""
+    @State private var zoomLevel: CGFloat = 1.0
     
     var body: some View {
         VStack(spacing: 0) {
@@ -301,21 +302,48 @@ struct PDFPreviewView: View {
                 Spacer()
                 
                 if pdfDocument != nil {
-                    Button(action: savePDF) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "square.and.arrow.down")
-                                .font(.system(size: 11))
-                            Text("Save")
+                    HStack(spacing: 12) {
+                        // Zoom controls
+                        HStack(spacing: 8) {
+                            Button(action: { zoomLevel = max(0.25, zoomLevel - 0.25) }) {
+                                Image(systemName: "minus.magnifyingglass")
+                                    .font(.system(size: 12))
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                            
+                            Text("\(Int(zoomLevel * 100))%")
                                 .font(.system(size: 11, weight: .medium))
+                                .frame(width: 40)
+                            
+                            Button(action: { zoomLevel = min(4.0, zoomLevel + 0.25) }) {
+                                Image(systemName: "plus.magnifyingglass")
+                                    .font(.system(size: 12))
+                            }
+                            .buttonStyle(PlainButtonStyle())
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.accentColor.opacity(0.1))
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color(NSColor.controlBackgroundColor))
                         )
+                        
+                        Button(action: savePDF) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "square.and.arrow.down")
+                                    .font(.system(size: 11))
+                                Text("Save")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(Color.accentColor.opacity(0.1))
+                            )
+                        }
+                        .buttonStyle(PlainButtonStyle())
                     }
-                    .buttonStyle(PlainButtonStyle())
                 }
             }
             .padding(.horizontal, 12)
@@ -325,7 +353,7 @@ struct PDFPreviewView: View {
                 .opacity(0.5)
             
             if let pdf = pdfDocument {
-                PDFKitView(pdfDocument: pdf)
+                EnhancedPDFKitView(pdfDocument: pdf, zoomLevel: zoomLevel)
             } else {
                 EmptyStateView()
             }
@@ -346,21 +374,66 @@ struct PDFPreviewView: View {
     }
     
     private func savePDF() {
-        guard let pdf = pdfDocument else { return }
+        guard let pdfDocument = pdfDocument else { return }
         
         let savePanel = NSSavePanel()
         savePanel.allowedContentTypes = [.pdf]
         savePanel.nameFieldStringValue = "Merged.pdf"
         
         savePanel.begin { response in
-            guard response == .OK,
-                  let url = savePanel.url else { return }
-            
-            do {
-                try pdf.dataRepresentation()?.write(to: url)
-            } catch {
-                errorMessage = error.localizedDescription
-                showError = true
+            if response == .OK, let url = savePanel.url {
+                do {
+                    try pdfDocument.write(to: url)
+                } catch {
+                    errorMessage = error.localizedDescription
+                    showError = true
+                }
+            }
+        }
+    }
+}
+
+struct EnhancedPDFKitView: NSViewRepresentable {
+    let pdfDocument: PDFKit.PDFDocument
+    let zoomLevel: CGFloat
+    
+    func makeNSView(context: Context) -> PDFKit.PDFView {
+        let pdfView = PDFKit.PDFView()
+        configurePDFView(pdfView)
+        return pdfView
+    }
+    
+    func updateNSView(_ pdfView: PDFKit.PDFView, context: Context) {
+        pdfView.document = pdfDocument
+        pdfView.scaleFactor = zoomLevel
+        pdfView.needsLayout = true
+        pdfView.layoutDocumentView()
+    }
+    
+    private func configurePDFView(_ pdfView: PDFKit.PDFView) {
+        pdfView.document = pdfDocument
+        pdfView.autoScales = true
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.backgroundColor = .clear
+        pdfView.displaysPageBreaks = true
+        pdfView.displayDirection = .vertical
+        pdfView.maxScaleFactor = 4.0
+        pdfView.minScaleFactor = 0.25
+        
+        // Enable smooth scrolling
+        if let scrollView = pdfView.documentView?.enclosingScrollView {
+            scrollView.hasVerticalScroller = true
+            scrollView.scrollerStyle = .overlay
+            scrollView.contentInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        }
+        
+        // Set initial zoom to fit width
+        DispatchQueue.main.async {
+            if let firstPage = pdfDocument.page(at: 0) {
+                let pageSize = firstPage.bounds(for: .mediaBox)
+                let viewWidth = pdfView.bounds.width - 40 // Account for insets
+                let scale = viewWidth / pageSize.width
+                pdfView.scaleFactor = scale
             }
         }
     }
