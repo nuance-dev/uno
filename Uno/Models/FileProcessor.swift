@@ -6,7 +6,17 @@ import os
 private let logger = Logger(subsystem: "me.nuanc.Uno", category: "FileProcessor")
 
 class FileProcessor: ObservableObject {
-    @Published var files: [URL] = []
+    @Published var files: [URL] = [] {
+        didSet {
+            if !files.isEmpty {
+                processFiles(mode: currentMode)
+            } else {
+                processedContent = ""
+                processedPDF = nil
+            }
+        }
+    }
+    @Published private(set) var currentMode: ContentView.Mode = .prompt
     @Published var isProcessing = false
     @Published var processedContent: String = ""
     @Published var processedPDF: PDFDocument?
@@ -191,5 +201,12 @@ class FileProcessor: ObservableObject {
         processedContent = ""
         processedPDF = nil
         error = nil
+    }
+    
+    func setMode(_ mode: ContentView.Mode) {
+        currentMode = mode
+        if !files.isEmpty {
+            processFiles(mode: mode)
+        }
     }
 } 

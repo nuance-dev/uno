@@ -4,90 +4,43 @@ import PDFKit
 struct ProcessingView: View {
     @ObservedObject var processor: FileProcessor
     let mode: ContentView.Mode
+    @State private var isCopied = false
     
     var body: some View {
-        VStack(spacing: 16) {
-            // Files List
+        VStack(spacing: 20) {
+            // Files List with improved design
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(processor.files, id: \.self) { url in
-                        FileItemView(url: url) {
-                            if let index = processor.files.firstIndex(of: url) {
-                                processor.files.remove(at: index)
+                        FileTag(url: url) {
+                            withAnimation(.spring(response: 0.3)) {
+                                if let index = processor.files.firstIndex(of: url) {
+                                    processor.files.remove(at: index)
+                                }
                             }
                         }
                     }
                 }
                 .padding(.horizontal)
             }
-            .frame(height: 40)
+            .frame(height: 32)
             
             // Result View
             if mode == .prompt {
-                PromptResultView(content: processor.processedContent)
+                PromptView(content: processor.processedContent, isCopied: $isCopied)
             } else {
-                PDFResultView(document: processor.processedPDF)
+                PDFPreviewView(pdfDocument: processor.processedPDF)
             }
             
             // Error Display
             if let error = processor.error {
-                Text(error)
-                    .foregroundColor(.red)
-                    .font(.caption)
-            }
-            
-            // Action Buttons
-            HStack(spacing: 12) {
-                Button(action: {
-                    processor.clearFiles()
-                }) {
-                    Label("Clear", systemImage: "xmark")
-                }
-                .buttonStyle(GlassButtonStyle())
-                
-                Button(action: {
-                    processor.processFiles(mode: mode)
-                }) {
-                    Label(mode == .prompt ? "Generate Prompt" : "Create PDF", 
-                          systemImage: mode == .prompt ? "text.word.spacing" : "doc.fill")
-                }
-                .buttonStyle(GlassButtonStyle())
-                
-                if !processor.processedContent.isEmpty || processor.processedPDF != nil {
-                    Button(action: {
-                        saveResult()
-                    }) {
-                        Label("Save", systemImage: "square.and.arrow.down")
-                    }
-                    .buttonStyle(GlassButtonStyle())
-                }
-            }
-        }
-    }
-    
-    private func saveResult() {
-        let savePanel = NSSavePanel()
-        savePanel.allowedContentTypes = [mode == .prompt ? .plainText : .pdf]
-        savePanel.nameFieldStringValue = mode == .prompt ? "prompt.txt" : "merged.pdf"
-        
-        savePanel.begin { response in
-            if response == .OK, let url = savePanel.url {
-                do {
-                    if mode == .prompt {
-                        try processor.processedContent.write(to: url, atomically: true, encoding: .utf8)
-                    } else if let pdfData = processor.processedPDF?.dataRepresentation() {
-                        try pdfData.write(to: url)
-                    }
-                } catch {
-                    processor.error = "Error saving file: \(error.localizedDescription)"
-                }
+                ErrorBanner(message: error)
             }
         }
     }
 }
 
-// Helper Views
-struct FileItemView: View {
+struct FileTag: View {
     let url: URL
     let onRemove: () -> Void
     
@@ -95,7 +48,8 @@ struct FileItemView: View {
         switch url.pathExtension.lowercased() {
         case "pdf": return "doc.fill"
         case "swift": return "swift"
-        case "js", "ts": return "curlybraces"
+        case "js": return "logo.javascript"
+        case "ts": return "t.square"
         case "html": return "chevron.left.forwardslash.chevron.right"
         case "css": return "paintbrush.fill"
         default: return "doc.text"
@@ -103,87 +57,94 @@ struct FileItemView: View {
     }
     
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Image(systemName: fileIcon)
-                .font(.system(size: 12))
+                .font(.system(size: 11))
                 .foregroundColor(.secondary)
             
             Text(url.lastPathComponent)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .lineLimit(1)
             
             Button(action: onRemove) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.secondary)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.secondary.opacity(0.8))
             }
             .buttonStyle(PlainButtonStyle())
-            .opacity(0)
-            .opacity(1)
+            .opacity(0.6)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(NSColor.controlBackgroundColor))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.primary.opacity(0.1), lineWidth: 1)
-                )
+            ZStack {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.8))
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            }
         )
-        .shadow(color: Color.black.opacity(0.03), radius: 2, x: 0, y: 1)
+        .transition(.scale.combined(with: .opacity))
     }
 }
 
-struct PromptResultView: View {
+struct PromptView: View {
     let content: String
-    @State private var isCopied = false
+    @Binding var isCopied: Bool
     
     var body: some View {
         VStack(spacing: 0) {
-            // Toolbar
+            // Header
             HStack {
-                Text("Result")
-                    .font(.system(size: 13, weight: .medium))
+                Text("Output")
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.secondary)
                 
                 Spacer()
                 
-                Button(action: copyToClipboard) {
-                    HStack(spacing: 4) {
-                        Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 12))
-                        Text(isCopied ? "Copied!" : "Copy")
-                            .font(.system(size: 12, weight: .medium))
+                if !content.isEmpty {
+                    Button(action: copyToClipboard) {
+                        HStack(spacing: 4) {
+                            Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                                .font(.system(size: 11))
+                            Text(isCopied ? "Copied" : "Copy")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.accentColor.opacity(0.1))
+                        )
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.accentColor.opacity(0.1))
-                    )
+                    .buttonStyle(PlainButtonStyle())
                 }
-                .buttonStyle(PlainButtonStyle())
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             
             Divider()
+                .opacity(0.5)
             
-            // Content
-            ScrollView {
-                Text(content)
-                    .font(.system(.body, design: .monospaced))
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if content.isEmpty {
+                EmptyStateView()
+            } else {
+                ScrollView {
+                    Text(content)
+                        .font(.system(.body, design: .monospaced))
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
             }
         }
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(NSColor.controlBackgroundColor))
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(NSColor.controlBackgroundColor).opacity(0.7))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.primary.opacity(0.1), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.primary.opacity(0.05), lineWidth: 1)
                 )
         )
     }
@@ -196,7 +157,7 @@ struct PromptResultView: View {
             isCopied = true
         }
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             withAnimation {
                 isCopied = false
             }
@@ -204,31 +165,123 @@ struct PromptResultView: View {
     }
 }
 
-struct PDFResultView: View {
-    let document: PDFDocument?
+struct EmptyStateView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "doc.text.fill")
+                .font(.system(size: 32))
+                .foregroundColor(.secondary.opacity(0.5))
+            Text("Add files to generate output")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+}
+
+struct ErrorBanner: View {
+    let message: String
     
     var body: some View {
-        if let document = document {
-            PDFKitView(document: document)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-        } else {
-            Color.clear
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.red)
+            Text(message)
+                .font(.system(size: 12))
+            Spacer()
         }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.red.opacity(0.1))
+        )
+        .padding(.horizontal)
     }
 }
 
 // PDFKit wrapper
 struct PDFKitView: NSViewRepresentable {
-    let document: PDFDocument
+    let pdfDocument: PDFKit.PDFDocument
     
-    func makeNSView(context: Context) -> PDFView {
-        let pdfView = PDFView()
-        pdfView.document = document
+    func makeNSView(context: Context) -> PDFKit.PDFView {
+        let pdfView = PDFKit.PDFView()
+        pdfView.document = pdfDocument
         pdfView.autoScales = true
+        pdfView.displayMode = .singlePage
+        pdfView.backgroundColor = .clear
         return pdfView
     }
     
-    func updateNSView(_ nsView: PDFView, context: Context) {
-        nsView.document = document
+    func updateNSView(_ pdfView: PDFKit.PDFView, context: Context) {
+        pdfView.document = pdfDocument
+    }
+}
+
+struct PDFPreviewView: View {
+    let pdfDocument: PDFKit.PDFDocument?
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text("PDF Preview")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                
+                Spacer()
+                
+                if pdfDocument != nil {
+                    Button(action: savePDF) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "square.and.arrow.down")
+                                .font(.system(size: 11))
+                            Text("Save")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.accentColor.opacity(0.1))
+                        )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            
+            Divider()
+                .opacity(0.5)
+            
+            if let pdf = pdfDocument {
+                PDFKitView(pdfDocument: pdf)
+            } else {
+                EmptyStateView()
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(NSColor.controlBackgroundColor).opacity(0.7))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+                )
+        )
+    }
+    
+    private func savePDF() {
+        guard let pdf = pdfDocument else { return }
+        
+        let savePanel = NSSavePanel()
+        savePanel.allowedContentTypes = [.pdf]
+        savePanel.nameFieldStringValue = "Merged.pdf"
+        
+        savePanel.begin { response in
+            if response == .OK, let url = savePanel.url {
+                try? pdf.write(to: url)
+            }
+        }
     }
 } 
