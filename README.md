@@ -19,6 +19,10 @@ Note: This app requires macOS version 14+
 
 **Pro tip:** Throw a folder and it will convert it all
 
+
+https://github.com/user-attachments/assets/e9d0838a-e99d-42a7-aed3-a217d56831ed
+
+
 ## 💻 Get it
 
 Download from the [releases](https://github.com/nuance-dev/Uno/releases/) page.
