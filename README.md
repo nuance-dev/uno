@@ -17,7 +17,7 @@ Note: This app requires macOS version 14+
   - Maintains document order
   - Preview support
 
-
+**Pro tip: **Throw a folder and it will convert it all
 
 ## 💻 Get it
 
