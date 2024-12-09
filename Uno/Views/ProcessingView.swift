@@ -91,42 +91,116 @@ struct FileItemView: View {
     let url: URL
     let onRemove: () -> Void
     
+    private var fileIcon: String {
+        switch url.pathExtension.lowercased() {
+        case "pdf": return "doc.fill"
+        case "swift": return "swift"
+        case "js", "ts": return "curlybraces"
+        case "html": return "chevron.left.forwardslash.chevron.right"
+        case "css": return "paintbrush.fill"
+        default: return "doc.text"
+        }
+    }
+    
     var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "doc")
+        HStack(spacing: 8) {
+            Image(systemName: fileIcon)
                 .font(.system(size: 12))
+                .foregroundColor(.secondary)
+            
             Text(url.lastPathComponent)
-                .font(.system(size: 12))
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+            
             Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 12))
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.secondary)
             }
             .buttonStyle(PlainButtonStyle())
+            .opacity(0)
+            .opacity(1)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.secondary.opacity(0.1))
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(NSColor.controlBackgroundColor))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.primary.opacity(0.1), lineWidth: 1)
+                )
         )
+        .shadow(color: Color.black.opacity(0.03), radius: 2, x: 0, y: 1)
     }
 }
 
 struct PromptResultView: View {
     let content: String
+    @State private var isCopied = false
     
     var body: some View {
-        ScrollView {
-            Text(content)
-                .font(.system(.body, design: .monospaced))
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(spacing: 0) {
+            // Toolbar
+            HStack {
+                Text("Result")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+                
+                Spacer()
+                
+                Button(action: copyToClipboard) {
+                    HStack(spacing: 4) {
+                        Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 12))
+                        Text(isCopied ? "Copied!" : "Copy")
+                            .font(.system(size: 12, weight: .medium))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.accentColor.opacity(0.1))
+                    )
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            
+            Divider()
+            
+            // Content
+            ScrollView {
+                Text(content)
+                    .font(.system(.body, design: .monospaced))
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.secondary.opacity(0.1))
+                .fill(Color(NSColor.controlBackgroundColor))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.primary.opacity(0.1), lineWidth: 1)
+                )
         )
+    }
+    
+    private func copyToClipboard() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(content, forType: .string)
+        
+        withAnimation {
+            isCopied = true
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withAnimation {
+                isCopied = false
+            }
+        }
     }
 }
 
