@@ -2,9 +2,6 @@ import SwiftUI
 import PDFKit
 import UniformTypeIdentifiers
 import os
-import CoreServices
-import QuickLook
-import QuickLookThumbnailing
 
 private let logger = Logger(subsystem: "me.nuanc.Uno", category: "FileProcessor")
 
@@ -35,28 +32,13 @@ class FileProcessor: ObservableObject {
         // Data files
         "json", "yaml", "yml", "xml", "csv", "toml",
         // Documentation
-        "md", "mdx", "txt", "rtf", "tex", "doc", "docx", "rst", "adoc", "org",
-        "wiki", "textile", "pod", "markdown", "mdown", "mkdn", "mkd",
+        "md", "txt", "rtf", "tex", "doc", "docx",
         // Config files
         "ini", "conf", "config", "env", "gitignore", "dockerignore",
-        "eslintrc", "prettierrc", "babelrc", "editorconfig",
         // Web files
-        "scss", "sass", "less", "svg", "graphql", "wasm", "astro", "svelte",
-        "postcss", "prisma", "proto", "hbs", "ejs", "pug",
+        "scss", "sass", "less", "svg", "graphql", "wasm",
         // Images (for PDF mode)
-        "pdf", "jpg", "jpeg", "png", "gif", "heic", "tiff", "webp",
-        // Office Documents
-        "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
-        // Publishing
-        "epub", "pages", "numbers", "key", "indd", "ai",
-        // Rich Text
-        "rtf", "rtfd", "wpd", "odf", "latex",
-        // Technical Documentation
-        "dita", "ditamap", "docbook", "tei", "asciidoc",
-        // Code Documentation
-        "javadoc", "jsdoc", "pdoc", "rdoc", "yard",
-        // Notebook formats
-        "ipynb", "rmd", "qmd"
+        "pdf", "jpg", "jpeg", "png", "gif", "heic", "tiff", "webp"
     ]
     
     private let maxFileSize: Int64 = 500 * 1024 * 1024 // 500MB limit
@@ -95,54 +77,27 @@ class FileProcessor: ObservableObject {
         for (index, url) in files.enumerated() {
             autoreleasepool {
                 do {
+                    // Update progress more frequently
                     DispatchQueue.main.async {
                         self.progress = Double(index) / totalFiles
                     }
                     
-                    let content: String
-                    
-                    switch url.pathExtension.lowercased() {
-                    case "pdf":
+                    if url.pathExtension.lowercased() == "pdf" {
                         if let pdf = PDFDocument(url: url),
                            let text = pdf.string {
-                            content = text
-                        } else {
-                            throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not extract PDF text"])
+                            result += "<\(url.lastPathComponent)>\n\(text)\n</\(url.lastPathComponent)>\n\n"
                         }
-                        
-                    case "doc", "docx":
-                        // Use textutil directly for Office documents
-                        let process = Process()
-                        process.executableURL = URL(fileURLWithPath: "/usr/bin/textutil")
-                        process.arguments = ["-convert", "txt", "-stdout", url.path]
-                        
-                        let pipe = Pipe()
-                        process.standardOutput = pipe
-                        
-                        try process.run()
-                        process.waitUntilExit()
-                        
-                        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                        if let text = String(data: data, encoding: .utf8) {
-                            content = text
-                        } else {
-                            throw NSError(domain: "", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not convert document to text"])
-                        }
-                        
-                    default:
-                        content = try String(contentsOf: url, encoding: .utf8)
+                    } else {
+                        let content = try String(contentsOf: url, encoding: .utf8)
+                        result += "<\(url.lastPathComponent)>\n\(content)\n</\(url.lastPathComponent)>\n\n"
                     }
                     
-                    result += "<\(url.lastPathComponent)>\n\(content)\n</\(url.lastPathComponent)>\n\n"
-                    
+                    // Final progress update
                     DispatchQueue.main.async {
                         self.progress = Double(index + 1) / totalFiles
                     }
                 } catch {
-                    logger.error("Error processing file \(url.lastPathComponent): \(error.localizedDescription)")
-                    DispatchQueue.main.async {
-                        self.error = "Error processing \(url.lastPathComponent): \(error.localizedDescription)"
-                    }
+                    logger.error("Error processing file: \(error.localizedDescription)")
                 }
             }
         }
@@ -161,6 +116,8 @@ class FileProcessor: ObservableObject {
         for (index, url) in files.enumerated() {
             autoreleasepool {
                 do {
+                    let _: PDFPage?
+                    
                     switch url.pathExtension.lowercased() {
                     case "pdf":
                         if let existingPDF = PDFDocument(url: url) {
@@ -171,34 +128,20 @@ class FileProcessor: ObservableObject {
                             }
                         }
                         
-                    case "doc", "docx":
-                        // Use the more robust conversion method
-                        if let convertedPDF = convertDocumentToPDF(url) {
-                            for i in 0..<convertedPDF.pageCount {
-                                if let page = convertedPDF.page(at: i) {
-                                    pdfDocument.insert(page, at: pdfDocument.pageCount)
-                                }
-                            }
-                        } else {
-                            throw NSError(domain: "", code: -1, 
-                                        userInfo: [NSLocalizedDescriptionKey: "Could not convert document to PDF"])
+                    case "jpg", "jpeg", "png", "gif", "heic", "tiff":
+                        if let image = NSImage(contentsOf: url),
+                           let page = createPDFPage(from: image) {
+                            pdfDocument.insert(page, at: pdfDocument.pageCount)
                         }
                         
                     default:
-                        if let pages = createPDFPage(from: url) {
-                            for page in pages {
-                                pdfDocument.insert(page, at: pdfDocument.pageCount)
-                            }
+                        if let textPage = createPDFPage(from: url) {
+                            pdfDocument.insert(textPage, at: pdfDocument.pageCount)
                         }
                     }
                     
                     DispatchQueue.main.async {
                         self.progress = Double(index + 1) / totalFiles
-                    }
-                } catch {
-                    logger.error("Error processing file for PDF: \(error.localizedDescription)")
-                    DispatchQueue.main.async {
-                        self.error = "Error processing \(url.lastPathComponent): \(error.localizedDescription)"
                     }
                 }
             }
@@ -211,7 +154,37 @@ class FileProcessor: ObservableObject {
         }
     }
     
-    private func createPDFPage(from url: URL) -> [PDFPage]? {
+    private func createPDFPage(from image: NSImage) -> PDFPage? {
+        let imageRect = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let pdfData = NSMutableData()
+        
+        guard let context = CGContext(consumer: CGDataConsumer(data: pdfData as CFMutableData)!,
+                                    mediaBox: nil,
+                                    nil) else { return nil }
+        
+        context.beginPDFPage(nil)
+        
+        // Calculate aspect ratio preserving dimensions
+        let imageSize = image.size
+        let scale = min(imageRect.width / imageSize.width,
+                       imageRect.height / imageSize.height)
+        let scaledWidth = imageSize.width * scale
+        let scaledHeight = imageSize.height * scale
+        let x = (imageRect.width - scaledWidth) / 2
+        let y = (imageRect.height - scaledHeight) / 2
+        
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            context.draw(cgImage, in: CGRect(x: x, y: y, width: scaledWidth, height: scaledHeight))
+        }
+        
+        context.endPDFPage()
+        context.closePDF()
+        
+        guard let pdfDocument = PDFDocument(data: pdfData as Data) else { return nil }
+        return pdfDocument.page(at: 0)
+    }
+    
+    private func createPDFPage(from url: URL) -> PDFPage? {
         do {
             let content = try String(contentsOf: url, encoding: .utf8)
             
@@ -219,99 +192,74 @@ class FileProcessor: ObservableObject {
             let style = NSMutableParagraphStyle()
             style.lineSpacing = 2
             style.paragraphSpacing = 10
-            style.alignment = .left
             
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
                 .foregroundColor: NSColor.black,
-                .paragraphStyle: style
+                .paragraphStyle: style,
+                .backgroundColor: NSColor.clear
             ]
             
             let attributedString = NSAttributedString(string: content, attributes: attributes)
-            var pages: [PDFPage] = []
             
-            // Create PDF context
+            // Create PDF page
             let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792) // US Letter
             let pdfData = NSMutableData()
             
             guard let consumer = CGDataConsumer(data: pdfData as CFMutableData) else { return nil }
+            
+            // Create PDF context with white background
             var mediaBox = CGRect(origin: .zero, size: pageRect.size)
             
             guard let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
                 return nil
             }
             
-            // Create framesetter
-            let framesetter = CTFramesetterCreateWithAttributedString(attributedString)
-            var currentRange = CFRangeMake(0, 0)
-            var currentPage = 0
+            // Start PDF page
+            context.beginPage(mediaBox: &mediaBox)
             
-            // Get total pages needed
+            // Fill white background explicitly
+            context.setFillColor(CGColor(gray: 1.0, alpha: 1.0))
+            context.fill(mediaBox)
+            
+            // Add header with file info
+            let headerAttributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 10, weight: .medium),
+                .foregroundColor: NSColor.darkGray
+            ]
+            
+            let headerText = "\(url.lastPathComponent)"
+            let headerString = NSAttributedString(string: headerText, attributes: headerAttributes)
+            
+            // Draw header
+            let headerRect = CGRect(x: 50, y: pageRect.height - 40, width: pageRect.width - 100, height: 20)
+            
+            // Create content frame
             let contentRect = CGRect(x: 50, y: 50, width: pageRect.width - 100, height: pageRect.height - 100)
             let path = CGPath(rect: contentRect, transform: nil)
-            var done = false
             
-            while !done {
-                // Start new page
-                context.beginPage(mediaBox: &mediaBox)
-                
-                // Fill white background
-                context.setFillColor(CGColor(gray: 1.0, alpha: 1.0))
-                context.fill(mediaBox)
-                
-                // Draw header
-                let headerAttributes: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 10, weight: .medium),
-                    .foregroundColor: NSColor.darkGray
-                ]
-                
-                let headerText = "\(url.lastPathComponent) - Page \(currentPage + 1)"
-                let headerString = NSAttributedString(string: headerText, attributes: headerAttributes)
-                let headerRect = CGRect(x: 50, y: pageRect.height - 40, width: pageRect.width - 100, height: 20)
-                
-                context.saveGState()
-                context.textMatrix = .identity
-                headerString.draw(in: headerRect)
-                context.restoreGState()
-                
-                // Create frame for this page
-                let frame = CTFramesetterCreateFrame(framesetter, currentRange, path, nil)
-                let frameRange = CTFrameGetVisibleStringRange(frame)
-                
-                // Draw the text
-                context.saveGState()
-                context.translateBy(x: 0, y: pageRect.height)
-                context.scaleBy(x: 1.0, y: -1.0)
-                CTFrameDraw(frame, context)
-                context.restoreGState()
-                
-                context.endPage()
-                
-                // Check if we're done
-                if frameRange.location + frameRange.length >= attributedString.length {
-                    done = true
-                } else {
-                    // Move to next portion of text
-                    currentRange = CFRangeMake(frameRange.location + frameRange.length, 0)
-                    currentPage += 1
-                }
-            }
+            // Draw content
+            let framesetter = CTFramesetterCreateWithAttributedString(attributedString)
+            let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: 0), path, nil)
             
+            // Draw header (in correct orientation)
+            context.saveGState()
+            context.textMatrix = .identity
+            headerString.draw(in: headerRect)
+            context.restoreGState()
+            
+            // Draw main content
+            context.saveGState()
+            CTFrameDraw(frame, context)
+            context.restoreGState()
+            
+            context.endPage()
             context.closePDF()
             
-            // Create PDF document and extract pages
-            if let pdfDocument = PDFDocument(data: pdfData as Data) {
-                for i in 0..<pdfDocument.pageCount {
-                    if let page = pdfDocument.page(at: i) {
-                        pages.append(page)
-                    }
-                }
-                return pages
-            }
-            
-            return nil
+            guard let pdfDocument = PDFDocument(data: pdfData as Data) else { return nil }
+            return pdfDocument.page(at: 0)
         } catch {
-            logger.error("Error creating PDF pages: \(error.localizedDescription)")
+            logger.error("Error creating PDF page: \(error.localizedDescription)")
             return nil
         }
     }
@@ -354,149 +302,5 @@ class FileProcessor: ObservableObject {
             }
             return false
         }
-    }
-    
-    private func convertDocumentToPDF(_ url: URL) -> PDFDocument? {
-        logger.debug("Converting document to PDF: \(url.lastPathComponent)")
-        
-        // Create temporary directory for conversion
-        let tempDir = FileManager.default.temporaryDirectory
-        let tempPDFURL = tempDir.appendingPathComponent(UUID().uuidString + ".pdf")
-        
-        do {
-            // Try NSWorkspace first for Office documents
-            if url.pathExtension.lowercased() == "docx" || url.pathExtension.lowercased() == "doc" {
-                logger.debug("Using NSWorkspace for Office document conversion")
-                
-                let workspace = NSWorkspace.shared
-                let configuration = [NSWorkspace.LaunchConfigurationKey.arguments: ["-convert-to", "pdf", url.path]]
-                
-                if let libreOfficePath = findLibreOffice() {
-                    try workspace.launchApplication(at: URL(fileURLWithPath: libreOfficePath),
-                                                 options: .default,
-                                                 configuration: configuration)
-                    
-                    // Wait for conversion (max 30 seconds)
-                    let outputURL = url.deletingPathExtension().appendingPathExtension("pdf")
-                    var timeout = 30
-                    while !FileManager.default.fileExists(atPath: outputURL.path) && timeout > 0 {
-                        Thread.sleep(forTimeInterval: 1)
-                        timeout -= 1
-                    }
-                    
-                    if let pdf = PDFDocument(url: outputURL) {
-                        try? FileManager.default.removeItem(at: outputURL)
-                        return pdf
-                    }
-                }
-            }
-            
-            // Fallback to QuickLook conversion
-            logger.debug("Falling back to QuickLook conversion")
-            let generator = QLThumbnailGenerator.shared
-            let request = QLThumbnailGenerator.Request(
-                fileAt: url,
-                size: CGSize(width: 612, height: 792),
-                scale: 2.0,
-                representationTypes: [.thumbnail, .lowQualityThumbnail]
-            )
-            
-            let semaphore = DispatchSemaphore(value: 0)
-            var conversionError: Error?
-            var pdfDocument: PDFDocument?
-            
-            generator.generateBestRepresentation(for: request) { (thumbnail, error) in
-                defer { semaphore.signal() }
-                
-                if let error = error {
-                    conversionError = error
-                    logger.error("QuickLook conversion failed: \(error.localizedDescription)")
-                    return
-                }
-                
-                if let cgImage = thumbnail?.cgImage {
-                    let pdfData = NSMutableData()
-                    
-                    if let consumer = CGDataConsumer(data: pdfData as CFMutableData) {
-                        var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
-                        
-                        if let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) {
-                            context.beginPage(mediaBox: &mediaBox)
-                            context.draw(cgImage, in: mediaBox)
-                            context.endPage()
-                            context.closePDF()
-                            
-                            pdfDocument = PDFDocument(data: pdfData as Data)
-                        }
-                    }
-                }
-            }
-            
-            _ = semaphore.wait(timeout: .now() + 30.0)
-            
-            if let error = conversionError {
-                throw error
-            }
-            
-            return pdfDocument
-            
-        } catch {
-            logger.error("Document conversion failed: \(error.localizedDescription)")
-            return nil
-        }
-    }
-    
-    private func findLibreOffice() -> String? {
-        let possiblePaths = [
-            "/Applications/LibreOffice.app/Contents/MacOS/soffice",
-            "/opt/homebrew/bin/soffice",
-            "/usr/local/bin/soffice"
-        ]
-        
-        for path in possiblePaths {
-            if FileManager.default.fileExists(atPath: path) {
-                return path
-            }
-        }
-        
-        return nil
-    }
-    
-    private func extractTextFromOfficeDocument(_ url: URL) throws -> String {
-        logger.debug("Extracting text from Office document: \(url.lastPathComponent)")
-        
-        if let pdf = convertDocumentToPDF(url),
-           let text = pdf.string {
-            return text
-        }
-        
-        // If PDF conversion fails, try direct text extraction
-        if let data = try? Data(contentsOf: url) {
-            // Try to extract text directly from DOCX
-            if url.pathExtension.lowercased() == "docx" {
-                let tempDir = FileManager.default.temporaryDirectory
-                let tempURL = tempDir.appendingPathComponent(UUID().uuidString + ".docx")
-                try data.write(to: tempURL)
-                
-                // Use textutil command line tool
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/textutil")
-                process.arguments = ["-convert", "txt", "-stdout", tempURL.path]
-                
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                try process.run()
-                
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                try? FileManager.default.removeItem(at: tempURL)
-                
-                if let text = String(data: data, encoding: .utf8) {
-                    return text
-                }
-            }
-        }
-        
-        throw NSError(domain: "", code: -1, 
-                     userInfo: [NSLocalizedDescriptionKey: "Could not extract text from document"])
     }
 } 

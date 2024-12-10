@@ -11,37 +11,19 @@
     <array>
         <dict>
             <key>CFBundleTypeName</key>
-            <string>Office Documents</string>
+            <string>All Files</string>
             <key>LSHandlerRank</key>
             <string>Default</string>
             <key>LSItemContentTypes</key>
             <array>
-                <string>com.microsoft.word.doc</string>
-                <string>org.openxmlformats.wordprocessingml.document</string>
-                <string>org.oasis-open.opendocument.text</string>
-                <string>com.apple.iwork.pages.pages</string>
-                <string>public.rtf</string>
+                <string>public.data</string>
+                <string>public.content</string>
             </array>
-        </dict>
-        <dict>
-            <key>CFBundleTypeName</key>
-            <string>Microsoft Word Document</string>
-            <key>LSHandlerRank</key>
-            <string>Alternate</string>
-            <key>LSItemContentTypes</key>
-            <array>
-                <string>com.microsoft.word.doc</string>
-                <string>org.openxmlformats.wordprocessingml.document</string>
-            </array>
-            <key>NSDocumentClass</key>
-            <string>NSDocument</string>
         </dict>
     </array>
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>This app needs to control other applications to convert Office documents.</string>
 </dict>
 </plist>
