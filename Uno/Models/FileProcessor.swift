@@ -29,16 +29,42 @@ class FileProcessor: ObservableObject {
         "swift", "ts", "js", "html", "css", "jsx", "tsx", "vue", "php",
         "py", "rb", "java", "cpp", "c", "h", "cs", "go", "rs", "kt",
         "scala", "m", "mm", "pl", "sh", "bash", "zsh", "sql", "r",
+        
         // Data files
         "json", "yaml", "yml", "xml", "csv", "toml",
+        
         // Documentation
-        "md", "txt", "rtf", "tex", "doc", "docx",
+        "md", "mdx", "txt", "rtf", "tex", "doc", "docx", "rst", "adoc", 
+        "org", "wiki", "textile", "pod", "markdown", "mdown", "mkdn", "mkd",
+        
         // Config files
         "ini", "conf", "config", "env", "gitignore", "dockerignore",
+        "eslintrc", "prettierrc", "babelrc", "editorconfig",
+        
         // Web files
-        "scss", "sass", "less", "svg", "graphql", "wasm",
+        "scss", "sass", "less", "svg", "graphql", "wasm", "astro",
+        "svelte", "postcss", "prisma", "proto", "hbs", "ejs", "pug",
+        
         // Images (for PDF mode)
-        "pdf", "jpg", "jpeg", "png", "gif", "heic", "tiff", "webp"
+        "pdf", "jpg", "jpeg", "png", "gif", "heic", "tiff", "webp",
+        
+        // Office Documents
+        "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp",
+        
+        // Publishing
+        "epub", "pages", "numbers", "key", "indd", "ai",
+        
+        // Rich Text
+        "rtf", "rtfd", "wpd", "odf", "latex",
+        
+        // Technical Documentation
+        "dita", "ditamap", "docbook", "tei", "asciidoc",
+        
+        // Code Documentation
+        "javadoc", "jsdoc", "pdoc", "rdoc", "yard",
+        
+        // Notebook formats
+        "ipynb", "rmd", "qmd"
     ]
     
     private let maxFileSize: Int64 = 500 * 1024 * 1024 // 500MB limit

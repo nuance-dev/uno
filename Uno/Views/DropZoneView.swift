@@ -19,8 +19,8 @@ struct DropZoneView: View {
                     .foregroundColor(.secondary)
                 
                 Text(mode == .prompt ?
-                     "Supports: .swift, .ts, .js, .html, .css, etc." :
-                     "Supports: Most text files and PDFs")
+                     "Supports: Code, docs, config files, and more" :
+                     "Supports: Most document formats and images")
                     .font(.subheadline)
                     .foregroundColor(.secondary.opacity(0.8))
             }
