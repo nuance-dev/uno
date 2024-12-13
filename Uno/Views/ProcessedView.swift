@@ -9,174 +9,151 @@ private let logger = Logger(subsystem: "me.nuanc.Uno", category: "ProcessedView"
 struct ProcessedView: View {
     @ObservedObject var processor: FileProcessor
     let mode: ContentView.Mode
+    @State private var showTreeView = false
+    @State private var treeStructure: FolderNode?
+    @State private var selectedNode: FolderNode?
     @State private var isCopied = false
-    @State private var showingClearConfirmation = false
-    @State private var zoomLevel: Double = 1.0
+    @State private var hoveredFile: URL?
     @State private var draggedItem: URL?
-    @State private var showError = false
-    @State private var errorMessage = ""
+    @State private var showClearConfirmation = false
     
     var body: some View {
-        VStack(spacing: 10) {
-            // Files header with reordering
-            HStack(spacing: 12) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(spacing: 6) {
-                        ForEach(processor.files, id: \.self) { url in
-                            FileTag(url: url, onRemove: {
-                                withAnimation(.spring(response: 0.3)) {
-                                    processor.removeFile(url)
-                                }
-                            })
-                            .opacity(draggedItem == url ? 0.5 : 1.0)
-                            .onDrag {
-                                draggedItem = url
-                                return NSItemProvider(object: url as NSURL)
+        HStack(spacing: 0) {
+            if showTreeView {
+                TreeSidebarView(structure: treeStructure)
+                    .frame(width: 240)
+                    .transition(.move(edge: .leading))
+            }
+            
+            VStack(spacing: 0) {
+                FileHeaderView(
+                    processor: processor,
+                    hoveredFile: $hoveredFile,
+                    draggedItem: $draggedItem,
+                    showClearConfirmation: $showClearConfirmation
+                )
+                
+                Divider()
+                
+                // Main content area
+                if mode == .prompt {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            if processor.includeTreeInPrompt {
+                                Text("File Structure")
+                                    .font(.headline)
+                                    .padding(.top)
                             }
-                            .onDrop(of: [.fileURL], delegate: FileDropDelegate(item: url, items: processor.files, draggedItem: $draggedItem) { from, to in
-                                withAnimation(.spring(response: 0.3)) {
-                                    processor.moveFile(from: from, to: to)
-                                }
-                            })
+                            Text(processor.processedContent)
+                                .font(.system(.body, design: .monospaced))
+                                .textSelection(.enabled)
+                                .padding()
                         }
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
+                } else {
+                    PDFPreviewView(processor: processor, 
+                                 pdfDocument: processor.processedPDF)
                 }
-                
-                if !processor.files.isEmpty {
-                    Button(action: { showingClearConfirmation = true }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "trash")
-                            Text("Clear")
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Color.red.opacity(0.1))
-                        .cornerRadius(6)
-                        .foregroundColor(.red)
+            }
+        }
+        .alert("Clear All Files?", isPresented: $showClearConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Clear", role: .destructive) {
+                withAnimation(.spring(response: 0.3)) {
+                    processor.clearFiles()
+                }
+            }
+        } message: {
+            Text("This will remove all files from the current session.")
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .automatic) {
+                toolbarItems
+            }
+        }
+        .onAppear {
+            updateTreeStructure()
+        }
+        .onChange(of: processor.files) { oldValue, newValue in
+            updateTreeStructure()
+        }
+    }
+    
+    private func updateTreeStructure() {
+        guard let firstFile = processor.files.first else {
+            treeStructure = nil
+            return
+        }
+        
+        do {
+            let rootURL = firstFile.deletingLastPathComponent()
+            treeStructure = try processor.buildFolderStructure(rootURL)
+        } catch {
+            logger.error("Failed to build folder structure: \(error.localizedDescription)")
+            treeStructure = nil
+        }
+    }
+    
+    private var toolbarItems: some View {
+        HStack(spacing: 16) {
+            if mode == .prompt {
+                Toggle(isOn: $processor.includeTreeInPrompt) {
+                    Label("Include Tree", systemImage: "list.bullet.indent")
+                }
+                .toggleStyle(.button)
+                .controlSize(.small)
+            }
+            
+            Button(action: { showTreeView.toggle() }) {
+                Label("File Tree", systemImage: "sidebar.left")
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(showTreeView ? .accentColor : .secondary)
+        }
+    }
+}
+
+struct TreeStructureView: View {
+    let node: FolderNode
+    @State private var isExpanded = true
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                if !node.children.isEmpty {
+                    Button(action: { isExpanded.toggle() }) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.secondary)
                     }
                     .buttonStyle(PlainButtonStyle())
-                    .confirmationDialog(
-                        "Clear All Files",
-                        isPresented: $showingClearConfirmation,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Clear All", role: .destructive) {
-                            withAnimation(.spring(response: 0.3)) {
-                                processor.clearFiles()
-                            }
-                        }
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("Are you sure you want to clear all files? This action cannot be undone.")
-                    }
+                }
+                
+                Image(systemName: node.children.isEmpty ? "doc" : "folder")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                
+                Text(node.url.lastPathComponent)
+                    .font(.system(size: 12))
+            }
+            .padding(.vertical, 2)
+            
+            if isExpanded {
+                ForEach(node.children) { child in
+                    TreeStructureView(node: child)
+                        .padding(.leading, 16)
                 }
             }
-            .frame(height: 36)
-            
-            // Content area
-            if mode == .prompt {
-                PromptView(content: processor.processedContent, isCopied: $isCopied) {
-                    HStack {
-                        Spacer()
-                        Text("\(TokenCounter.formatTokenCount(TokenCounter.estimateTokenCount(processor.processedContent))) tokens")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 4)
-                            .background(
-                                Capsule()
-                                    .fill(Color.secondary.opacity(0.1))
-                            )
-                    }
-                    .padding(.trailing, 12)
-                    .padding(.bottom, 8)
-                }
-            } else {
-                PDFPreviewView(processor: processor, pdfDocument: processor.processedPDF)
-            }
-            
-            if let error = processor.error {
-                ErrorBanner(message: error)
-            }
-        }
-    }
-}
-
-struct ErrorBanner: View {
-    let message: String
-    
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.red)
-            Text(message)
-                .font(.system(size: 12))
-            Spacer()
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.red.opacity(0.1))
-        )
-        .padding(.horizontal)
-    }
-}
-
-// PDFKit wrapper
-struct PDFKitView: NSViewRepresentable {
-    let pdfDocument: PDFKit.PDFDocument
-    private let memoryManager = MemoryManager.shared
-    
-    func makeNSView(context: Context) -> PDFKit.PDFView {
-        let pdfView = PDFKit.PDFView()
-        memoryManager.beginMemoryIntensiveTask()
-        
-        pdfView.document = pdfDocument
-        pdfView.autoScales = true
-        pdfView.displayMode = .singlePageContinuous
-        pdfView.backgroundColor = .clear
-        pdfView.displaysPageBreaks = true
-        pdfView.displayDirection = .vertical
-        
-        // Improve default sizing
-        pdfView.scaleFactor = pdfView.scaleFactorForSizeToFit
-        pdfView.maxScaleFactor = 4.0
-        pdfView.minScaleFactor = 0.25
-        
-        // Enable smooth scrolling
-        if let scrollView = pdfView.documentView?.enclosingScrollView {
-            scrollView.hasVerticalScroller = true
-            scrollView.scrollerStyle = .overlay
-            
-            // Set content insets for better presentation
-            scrollView.contentInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        }
-        
-        return pdfView
-    }
-    
-    func updateNSView(_ pdfView: PDFKit.PDFView, context: Context) {
-        autoreleasepool {
-            pdfView.document = pdfDocument
-            pdfView.scaleFactor = pdfView.scaleFactorForSizeToFit
-            pdfView.needsLayout = true
-            pdfView.layoutDocumentView()
-            
-            memoryManager.cleanupIfNeeded()
         }
     }
 }
 
 struct PDFPreviewView: View {
     @ObservedObject var processor: FileProcessor
-    let pdfDocument: PDFKit.PDFDocument?
-    @State private var showError: Bool = false
-    @State private var errorMessage: String = ""
+    let pdfDocument: PDFDocument?
+    @State private var showError = false
+    @State private var errorMessage = ""
     @State private var zoomLevel: CGFloat = 1.0
-    @State private var isSaving: Bool = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -224,12 +201,8 @@ struct PDFPreviewView: View {
                             }
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(Color.accentColor.opacity(0.1))
-                            )
                         }
-                        .buttonStyle(PlainButtonStyle())
+                        .buttonStyle(.borderedProminent)
                     }
                 }
             }
@@ -237,10 +210,10 @@ struct PDFPreviewView: View {
             .padding(.vertical, 8)
             
             Divider()
-                .opacity(0.5)
             
             if let pdf = pdfDocument {
-                EnhancedPDFKitView(pdfDocument: pdf, zoomLevel: zoomLevel)
+                PDFKitView(pdfDocument: pdf, zoomLevel: zoomLevel)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 EmptyStateView()
             }
@@ -263,31 +236,7 @@ struct PDFPreviewView: View {
             do {
                 if let pdfDocument = self.pdfDocument {
                     try pdfDocument.write(to: url)
-                    
-                    // Show success feedback using modern UserNotifications
-                    DispatchQueue.main.async {
-                        NSWorkspace.shared.activateFileViewerSelecting([url])
-                        
-                        let content = UNMutableNotificationContent()
-                        content.title = "PDF Saved"
-                        content.body = "Your PDF has been saved successfully"
-                        
-                        let request = UNNotificationRequest(identifier: UUID().uuidString,
-                                                          content: content,
-                                                          trigger: nil)
-                        
-                        UNUserNotificationCenter.current().add(request) { error in
-                            if let error = error {
-                                print("Error showing notification: \(error.localizedDescription)")
-                            }
-                        }
-                    }
-                } else {
-                    throw NSError(
-                        domain: "PDFError",
-                        code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "No PDF document available"]
-                    )
+                    showSuccessNotification(url: url)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -297,51 +246,18 @@ struct PDFPreviewView: View {
             }
         }
     }
-}
-
-struct EnhancedPDFKitView: NSViewRepresentable {
-    let pdfDocument: PDFKit.PDFDocument
-    let zoomLevel: CGFloat
     
-    func makeNSView(context: Context) -> PDFKit.PDFView {
-        let pdfView = PDFKit.PDFView()
-        configurePDFView(pdfView)
-        return pdfView
-    }
-    
-    func updateNSView(_ pdfView: PDFKit.PDFView, context: Context) {
-        pdfView.document = pdfDocument
-        pdfView.scaleFactor = zoomLevel
-        pdfView.needsLayout = true
-        pdfView.layoutDocumentView()
-    }
-    
-    private func configurePDFView(_ pdfView: PDFKit.PDFView) {
-        pdfView.document = pdfDocument
-        pdfView.autoScales = true
-        pdfView.displayMode = .singlePageContinuous
-        pdfView.backgroundColor = .clear
-        pdfView.displaysPageBreaks = true
-        pdfView.displayDirection = .vertical
-        pdfView.maxScaleFactor = 4.0
-        pdfView.minScaleFactor = 0.25
+    private func showSuccessNotification(url: URL) {
+        let content = UNMutableNotificationContent()
+        content.title = "PDF Saved"
+        content.body = "Your PDF has been saved successfully"
         
-        // Enable smooth scrolling
-        if let scrollView = pdfView.documentView?.enclosingScrollView {
-            scrollView.hasVerticalScroller = true
-            scrollView.scrollerStyle = .overlay
-            scrollView.contentInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        }
+        let request = UNNotificationRequest(identifier: UUID().uuidString,
+                                          content: content,
+                                          trigger: nil)
         
-        // Set initial zoom to fit width
-        DispatchQueue.main.async {
-            if let firstPage = pdfDocument.page(at: 0) {
-                let pageSize = firstPage.bounds(for: .mediaBox)
-                let viewWidth = pdfView.bounds.width - 40 // Account for insets
-                let scale = viewWidth / pageSize.width
-                pdfView.scaleFactor = scale
-            }
-        }
+        UNUserNotificationCenter.current().add(request)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 }
 
@@ -356,5 +272,40 @@ struct EmptyStateView: View {
                 .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct PDFKitView: NSViewRepresentable {
+    let pdfDocument: PDFDocument
+    let zoomLevel: CGFloat
+    
+    func makeNSView(context: Context) -> PDFView {
+        let pdfView = PDFView()
+        configurePDFView(pdfView)
+        return pdfView
+    }
+    
+    func updateNSView(_ pdfView: PDFView, context: Context) {
+        pdfView.document = pdfDocument
+        pdfView.scaleFactor = zoomLevel
+        pdfView.needsLayout = true
+        pdfView.layoutDocumentView()
+    }
+    
+    private func configurePDFView(_ pdfView: PDFView) {
+        pdfView.document = pdfDocument
+        pdfView.autoScales = true
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.backgroundColor = .clear
+        pdfView.displaysPageBreaks = true
+        pdfView.displayDirection = .vertical
+        pdfView.maxScaleFactor = 4.0
+        pdfView.minScaleFactor = 0.25
+        
+        if let scrollView = pdfView.documentView?.enclosingScrollView {
+            scrollView.hasVerticalScroller = true
+            scrollView.scrollerStyle = .overlay
+            scrollView.contentInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        }
     }
 }

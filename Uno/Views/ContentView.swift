@@ -9,7 +9,7 @@ struct ContentView: View {
     @StateObject private var processor = FileProcessor()
     @State private var isDragging = false
     @State private var mode = Mode.prompt
-    private let performanceMonitor = PerformanceMonitor.shared
+    @State private var showClearConfirmation = false
     
     enum Mode: String, CaseIterable {
         case prompt = "Prompt"
@@ -18,21 +18,56 @@ struct ContentView: View {
     
     var body: some View {
         ZStack {
-            VisualEffectBlur(material: .headerView, blendingMode: .behindWindow)
+            VisualEffectBlur(material: .contentBackground, blendingMode: .behindWindow)
                 .ignoresSafeArea()
             
-            VStack(spacing: 10) {
-                modeSwitcher
-                mainContent
+            VStack(spacing: 16) {
+                // Top toolbar
+                HStack {
+                    modeSwitcher
+                    
+                    Spacer()
+                    
+                    if !processor.files.isEmpty {
+                        Button(action: { showClearConfirmation = true }) {
+                            Label("Clear All", systemImage: "trash")
+                                .foregroundColor(.red)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(Color.red.opacity(0.1))
+                                .cornerRadius(8)
+                        }
+                        .buttonStyle(.borderless)
+                        .keyboardShortcut(.delete, modifiers: [.command])
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.top, 20)
+                
+                // Main content
+                ZStack {
+                    if processor.files.isEmpty {
+                        DropZoneView(isDragging: $isDragging, mode: mode) {
+                            handleFileSelection()
+                        }
+                    } else {
+                        ProcessedView(processor: processor, mode: mode)
+                    }
+                    
+                    if processor.isProcessing {
+                        LoaderView(progress: processor.progress)
+                    }
+                }
             }
-            .padding(30)
+            .padding(20)
         }
-        .frame(minWidth: 600, minHeight: 700)
-        .onChange(of: mode, initial: true) { oldValue, newMode in
-            processor.setMode(newMode)
-        }
-        .onDrop(of: [.fileURL], isTargeted: $isDragging) { providers in
-            handleDroppedFiles(providers)
+        .alert("Clear All Files?", isPresented: $showClearConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Clear", role: .destructive) {
+                withAnimation {
+                    processor.clearFiles()
+                }
+            }
         }
     }
     
@@ -70,22 +105,6 @@ struct ContentView: View {
             )
         }
         .padding(.horizontal)
-    }
-    
-    private var mainContent: some View {
-        ZStack {
-            if processor.files.isEmpty {
-                DropZoneView(isDragging: $isDragging, mode: mode) {
-                    handleFileSelection()
-                }
-            } else {
-                ProcessedView(processor: processor, mode: mode)
-            }
-            
-            if processor.isProcessing {
-                LoaderView(progress: processor.progress)
-            }
-        }
     }
     
     func handleFileSelection() {
@@ -147,22 +166,19 @@ struct ContentView: View {
     }
     
     private func processSelectedFiles(_ urls: [URL]) {
-        performanceMonitor.trackOperation("processSelectedFiles") {
-            logger.debug("Processing selected files: \(urls.map { $0.lastPathComponent })")
-            processor.files.removeAll()
-            
-            for url in urls {
-                autoreleasepool {
-                    processFile(url)
-                }
+        processor.files.removeAll()
+        
+        for url in urls {
+            if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+                let files = processor.processDirectory(url)
+                processor.files.append(contentsOf: files)
+            } else {
+                processFile(url)
             }
-            
-            if !processor.files.isEmpty {
-                logger.debug("Starting file processing with \(processor.files.count) files")
-                DispatchQueue.main.async {
-                    self.processor.processFiles(mode: self.mode)
-                }
-            }
+        }
+        
+        if !processor.files.isEmpty {
+            processor.processFiles(mode: mode)
         }
     }
     
