@@ -9,10 +9,11 @@ struct ContentView: View {
     @StateObject private var processor = FileProcessor()
     @State private var isDragging = false
     @State private var mode = Mode.prompt
+    private let performanceMonitor = PerformanceMonitor.shared
     
-    enum Mode: Hashable {
-        case prompt
-        case pdf
+    enum Mode: String, CaseIterable {
+        case prompt = "Prompt"
+        case pdf = "PDF"
     }
     
     var body: some View {
@@ -92,8 +93,16 @@ struct ContentView: View {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
-        panel.allowedContentTypes = mode == .prompt ? 
-            [.plainText, .sourceCode] : [.plainText, .pdf, .sourceCode]
+        
+        // Convert string file extensions to UTTypes
+        if mode == .prompt {
+            let types = processor.supportedTypes.compactMap { fileExtension in
+                UTType(filenameExtension: fileExtension)
+            }
+            panel.allowedContentTypes = types
+        } else {
+            panel.allowedContentTypes = [.pdf, .text, .image]
+        }
         
         panel.begin { response in
             if response == .OK {
@@ -138,35 +147,28 @@ struct ContentView: View {
     }
     
     private func processSelectedFiles(_ urls: [URL]) {
-        logger.debug("Processing selected files: \(urls.map { $0.lastPathComponent })")
-        processor.files.removeAll() // Clear existing files
-        
-        for url in urls {
-            if url.hasDirectoryPath {
-                logger.debug("Processing directory: \(url.path)")
-                if let enumerator = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey]) {
-                    for case let fileURL as URL in enumerator {
-                        if processor.supportedTypes.contains(fileURL.pathExtension.lowercased()) {
-                            logger.debug("Adding file from directory: \(fileURL.lastPathComponent)")
-                            processor.files.append(fileURL)
-                        }
-                    }
+        performanceMonitor.trackOperation("processSelectedFiles") {
+            logger.debug("Processing selected files: \(urls.map { $0.lastPathComponent })")
+            processor.files.removeAll()
+            
+            for url in urls {
+                autoreleasepool {
+                    processFile(url)
                 }
-            } else {
-                if processor.supportedTypes.contains(url.pathExtension.lowercased()) {
-                    logger.debug("Adding single file: \(url.lastPathComponent)")
-                    processor.files.append(url)
+            }
+            
+            if !processor.files.isEmpty {
+                logger.debug("Starting file processing with \(processor.files.count) files")
+                DispatchQueue.main.async {
+                    self.processor.processFiles(mode: self.mode)
                 }
             }
         }
-        
-        if !processor.files.isEmpty {
-            logger.debug("Starting file processing with \(processor.files.count) files in mode: \(String(describing: mode))")
-            DispatchQueue.main.async {
-                self.processor.processFiles(mode: self.mode)
-            }
-        } else {
-            logger.warning("No valid files found to process")
+    }
+    
+    private func processFile(_ url: URL) {
+        if processor.validateFile(url) {
+            processor.files.append(url)
         }
     }
 }

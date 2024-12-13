@@ -4,8 +4,16 @@
 <dict>
     <key>NSAppTransportSecurity</key>
     <dict>
-        <key>NSAllowsArbitraryLoads</key>
-        <true/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>api.github.com</key>
+            <dict>
+                <key>NSExceptionRequiresForwardSecrecy</key>
+                <true/>
+                <key>NSExceptionMinimumTLSVersion</key>
+                <string>TLSv1.2</string>
+            </dict>
+        </dict>
     </dict>
     <key>CFBundleDocumentTypes</key>
     <array>
@@ -18,12 +26,23 @@
             <array>
                 <string>public.data</string>
                 <string>public.content</string>
+                <string>public.text</string>
+                <string>public.source-code</string>
+                <string>com.adobe.pdf</string>
+                <string>public.image</string>
             </array>
         </dict>
     </array>
-    <key>com.apple.security.files.user-selected.read-write</key>
-    <true/>
-    <key>com.apple.security.network.client</key>
-    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2024 Nuance. All rights reserved.</string>
+    <key>CFBundleVersion</key>
+    <string>14</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
 </dict>
 </plist>
+

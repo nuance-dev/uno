@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-
+import UserNotifications
 @main
 struct UnoApp: App {
     @AppStorage("isDarkMode") private var isDarkMode = false
@@ -19,6 +19,11 @@ struct UnoApp: App {
                     updater.checkForUpdates()
                     updater.onUpdateAvailable = {
                         showingUpdateSheet = true
+                    }
+                    UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+                        if let error = error {
+                            print("Error requesting notification permission: \(error.localizedDescription)")
+                        }
                     }
                 }
         }

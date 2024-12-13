@@ -1,6 +1,8 @@
 import SwiftUI
 import PDFKit
+import UniformTypeIdentifiers
 import os
+import UserNotifications
 
 private let logger = Logger(subsystem: "me.nuanc.Uno", category: "ProcessedView")
 
@@ -9,76 +11,89 @@ struct ProcessedView: View {
     let mode: ContentView.Mode
     @State private var isCopied = false
     @State private var showingClearConfirmation = false
+    @State private var zoomLevel: Double = 1.0
+    @State private var draggedItem: URL?
     @State private var showError = false
     @State private var errorMessage = ""
-    @State private var zoomLevel: Double = 1.0
-    
-    var clearButton: some View {
-        Button(action: {
-            showingClearConfirmation = true
-        }) {
-            HStack(spacing: 6) {
-                Image(systemName: "trash")
-                Text("Clear All")
-                    .font(.system(size: 13, weight: .medium))
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.red.opacity(0.1))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.red.opacity(0.2), lineWidth: 1)
-            )
-            .foregroundColor(.red)
-        }
-        .buttonStyle(PlainButtonStyle())
-        .help("Clear all files")
-        .confirmationDialog(
-            "Clear All Files",
-            isPresented: $showingClearConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Clear All", role: .destructive) {
-                withAnimation(.spring(response: 0.3)) {
-                    processor.clearFiles()
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Are you sure you want to clear all files? This action cannot be undone.")
-        }
-    }
     
     var body: some View {
         VStack(spacing: 10) {
-            HStack {
+            // Files header with reordering
+            HStack(spacing: 12) {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
+                    LazyHStack(spacing: 6) {
                         ForEach(processor.files, id: \.self) { url in
-                            FileTag(url: url) {
+                            FileTag(url: url, onRemove: {
                                 withAnimation(.spring(response: 0.3)) {
-                                    if let index = processor.files.firstIndex(of: url) {
-                                        processor.files.remove(at: index)
-                                    }
+                                    processor.removeFile(url)
                                 }
+                            })
+                            .opacity(draggedItem == url ? 0.5 : 1.0)
+                            .onDrag {
+                                draggedItem = url
+                                return NSItemProvider(object: url as NSURL)
                             }
+                            .onDrop(of: [.fileURL], delegate: FileDropDelegate(item: url, items: processor.files, draggedItem: $draggedItem) { from, to in
+                                withAnimation(.spring(response: 0.3)) {
+                                    processor.moveFile(from: from, to: to)
+                                }
+                            })
                         }
                     }
-                    .padding(.horizontal)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
                 }
                 
                 if !processor.files.isEmpty {
-                    clearButton
+                    Button(action: { showingClearConfirmation = true }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "trash")
+                            Text("Clear")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.red.opacity(0.1))
+                        .cornerRadius(6)
+                        .foregroundColor(.red)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .confirmationDialog(
+                        "Clear All Files",
+                        isPresented: $showingClearConfirmation,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Clear All", role: .destructive) {
+                            withAnimation(.spring(response: 0.3)) {
+                                processor.clearFiles()
+                            }
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Are you sure you want to clear all files? This action cannot be undone.")
+                    }
                 }
             }
-            .frame(height: 40)
+            .frame(height: 36)
             
-            // Result View
+            // Content area
             if mode == .prompt {
-                PromptView(content: processor.processedContent, isCopied: $isCopied)
+                PromptView(content: processor.processedContent, isCopied: $isCopied) {
+                    HStack {
+                        Spacer()
+                        Text("\(TokenCounter.formatTokenCount(TokenCounter.estimateTokenCount(processor.processedContent))) tokens")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule()
+                                    .fill(Color.secondary.opacity(0.1))
+                            )
+                    }
+                    .padding(.trailing, 12)
+                    .padding(.bottom, 8)
+                }
             } else {
                 PDFPreviewView(processor: processor, pdfDocument: processor.processedPDF)
             }
@@ -87,146 +102,6 @@ struct ProcessedView: View {
                 ErrorBanner(message: error)
             }
         }
-    }
-}
-
-struct FileTag: View {
-    let url: URL
-    let onRemove: () -> Void
-    
-    private var fileIcon: String {
-        switch url.pathExtension.lowercased() {
-        case "pdf": return "doc.fill"
-        case "swift": return "swift"
-        case "js": return "logo.javascript"
-        case "ts": return "t.square"
-        case "html": return "chevron.left.forwardslash.chevron.right"
-        case "css": return "paintbrush.fill"
-        default: return "doc.text"
-        }
-    }
-    
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: fileIcon)
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-            
-            Text(url.lastPathComponent)
-                .font(.system(size: 11, weight: .medium))
-                .lineLimit(1)
-            
-            Button(action: onRemove) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(.secondary.opacity(0.8))
-            }
-            .buttonStyle(PlainButtonStyle())
-            .opacity(0.6)
-            .contentShape(Rectangle())
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            ZStack {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.8))
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
-            }
-        )
-        .transition(.scale.combined(with: .opacity))
-    }
-}
-
-struct PromptView: View {
-    let content: String
-    @Binding var isCopied: Bool
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text("Output")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.secondary)
-                
-                Spacer()
-                
-                if !content.isEmpty {
-                    Button(action: copyToClipboard) {
-                        HStack(spacing: 4) {
-                            Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                                .font(.system(size: 11))
-                            Text(isCopied ? "Copied" : "Copy")
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.accentColor.opacity(0.1))
-                        )
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            
-            Divider()
-                .opacity(0.5)
-            
-            if content.isEmpty {
-                EmptyStateView()
-            } else {
-                ScrollView {
-                    Text(content)
-                        .font(.system(.body, design: .monospaced))
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                }
-            }
-        }
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(NSColor.controlBackgroundColor).opacity(0.7))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.primary.opacity(0.05), lineWidth: 1)
-                )
-        )
-    }
-    
-    private func copyToClipboard() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(content, forType: .string)
-        
-        withAnimation {
-            isCopied = true
-        }
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            withAnimation {
-                isCopied = false
-            }
-        }
-    }
-}
-
-struct EmptyStateView: View {
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "doc.text.fill")
-                .font(.system(size: 32))
-                .foregroundColor(.secondary.opacity(0.5))
-            Text("Add files to generate output")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
     }
 }
 
@@ -253,9 +128,12 @@ struct ErrorBanner: View {
 // PDFKit wrapper
 struct PDFKitView: NSViewRepresentable {
     let pdfDocument: PDFKit.PDFDocument
+    private let memoryManager = MemoryManager.shared
     
     func makeNSView(context: Context) -> PDFKit.PDFView {
         let pdfView = PDFKit.PDFView()
+        memoryManager.beginMemoryIntensiveTask()
+        
         pdfView.document = pdfDocument
         pdfView.autoScales = true
         pdfView.displayMode = .singlePageContinuous
@@ -281,10 +159,14 @@ struct PDFKitView: NSViewRepresentable {
     }
     
     func updateNSView(_ pdfView: PDFKit.PDFView, context: Context) {
-        pdfView.document = pdfDocument
-        pdfView.scaleFactor = pdfView.scaleFactorForSizeToFit
-        pdfView.needsLayout = true
-        pdfView.layoutDocumentView()
+        autoreleasepool {
+            pdfView.document = pdfDocument
+            pdfView.scaleFactor = pdfView.scaleFactorForSizeToFit
+            pdfView.needsLayout = true
+            pdfView.layoutDocumentView()
+            
+            memoryManager.cleanupIfNeeded()
+        }
     }
 }
 
@@ -382,15 +264,23 @@ struct PDFPreviewView: View {
                 if let pdfDocument = self.pdfDocument {
                     try pdfDocument.write(to: url)
                     
-                    // Show success feedback
+                    // Show success feedback using modern UserNotifications
                     DispatchQueue.main.async {
                         NSWorkspace.shared.activateFileViewerSelecting([url])
                         
-                        // Optional: Show success notification
-                        let notification = NSUserNotification()
-                        notification.title = "PDF Saved"
-                        notification.informativeText = "Your PDF has been saved successfully"
-                        NSUserNotificationCenter.default.deliver(notification)
+                        let content = UNMutableNotificationContent()
+                        content.title = "PDF Saved"
+                        content.body = "Your PDF has been saved successfully"
+                        
+                        let request = UNNotificationRequest(identifier: UUID().uuidString,
+                                                          content: content,
+                                                          trigger: nil)
+                        
+                        UNUserNotificationCenter.current().add(request) { error in
+                            if let error = error {
+                                print("Error showing notification: \(error.localizedDescription)")
+                            }
+                        }
                     }
                 } else {
                     throw NSError(
@@ -453,4 +343,18 @@ struct EnhancedPDFKitView: NSViewRepresentable {
             }
         }
     }
-} 
+}
+
+struct EmptyStateView: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 40))
+                .foregroundColor(.secondary)
+            Text("No preview available")
+                .font(.system(size: 14))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}

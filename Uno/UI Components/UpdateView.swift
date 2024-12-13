@@ -6,22 +6,43 @@ struct UpdateView: View {
     
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.system(size: 48))
-                .foregroundStyle(.blue)
+            // App Icon
+            if let appIcon = NSImage(named: NSImage.applicationIconName) {
+                Image(nsImage: appIcon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 64, height: 64)
+            }
             
-            Text(updater.updateAvailable ? "Update Available" : "No Updates Available")
-                .font(.title2)
-                .fontWeight(.semibold)
+            // Title and Version
+            VStack(spacing: 4) {
+                Text(updater.updateAvailable ? "Update Available" : "Up to Date")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                
+                if let version = updater.latestVersion {
+                    Text("Version \(version)")
+                        .foregroundStyle(.secondary)
+                }
+            }
             
-            Text(updater.updateAvailable ? 
-                "A new version of Uno is available. Would you like to download it now?" :
-                "You're running the latest version of Uno.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+            // Release Notes
+            if updater.updateAvailable, let notes = updater.releaseNotes {
+                ScrollView {
+                    Text(notes)
+                        .font(.system(.body))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                }
+                .frame(maxHeight: 200)
+                .background(Color(NSColor.textBackgroundColor).opacity(0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
             
-            if updater.updateAvailable {
-                HStack(spacing: 12) {
+            // Action Buttons
+            HStack(spacing: 12) {
+                if updater.updateAvailable {
                     Button("Later") {
                         dismiss()
                     }
@@ -31,24 +52,29 @@ struct UpdateView: View {
                     Button {
                         if let url = updater.downloadURL {
                             NSWorkspace.shared.open(url)
+                            dismiss()
                         }
-                        dismiss()
                     } label: {
-                        Text("Download")
-                            .frame(width: 100)
+                        Text("Download Update")
+                            .frame(width: 120)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(.blue)
+                } else {
+                    Button("OK") {
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-            } else {
-                Button("OK") {
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.blue)
+            }
+            
+            if updater.isChecking {
+                ProgressView()
+                    .scaleEffect(0.8)
+                    .padding(.top, 8)
             }
         }
         .padding(30)
         .frame(width: 400)
+        .background(VisualEffectBlur(material: .contentBackground, blendingMode: .behindWindow))
     }
 } 

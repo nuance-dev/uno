@@ -1,4 +1,7 @@
 import Foundation
+import os.log
+
+private let logger = Logger(subsystem: "me.nuanc.Uno", category: "UpdateChecker")
 
 struct GitHubRelease: Codable {
     let tagName: String
@@ -22,6 +25,7 @@ class UpdateChecker: ObservableObject {
     @Published var isChecking = false
     @Published var error: String?
     @Published var statusIcon: String = "checkmark.circle"
+    @Published var isProcessing = false
     
     var onStatusChange: ((String) -> Void)?
     var onUpdateAvailable: (() -> Void)?
@@ -29,13 +33,16 @@ class UpdateChecker: ObservableObject {
     private let currentVersion: String
     private let githubRepo: String
     private var updateCheckTimer: Timer?
+    private var retryCount = 0
+    private let maxRetries = 3
+    private let performanceMonitor = PerformanceMonitor.shared
     
     init() {
-            self.currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
-            self.githubRepo = "nuance-dev/Uno"
-            setupTimer()
-            updateStatusIcon()
-        }
+        self.currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0"
+        self.githubRepo = "nuance-dev/uno"
+        setupTimer()
+        updateStatusIcon()
+    }
     
     private func setupTimer() {
         // Initial check after 2 seconds
@@ -62,89 +69,93 @@ class UpdateChecker: ObservableObject {
     }
     
     func checkForUpdates() {
-        print("Checking for updates...")
-        print("Current version: \(currentVersion)")
-        
-        isChecking = true
-        updateStatusIcon()
-        error = nil
-        
-        let baseURL = "https://api.github.com/repos/\(githubRepo)/releases/latest"
-        guard let url = URL(string: baseURL) else {
-            error = "Invalid GitHub repository URL"
-            isChecking = false
+        performanceMonitor.trackOperation("checkForUpdates") {
+            guard !isChecking else { return }
+            
+            isChecking = true
             updateStatusIcon()
-            return
+            error = nil
+            
+            let request = createUpdateRequest()
+            performNetworkRequest(request)
         }
-        
-        var request = URLRequest(url: url)
-        request.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
-        request.setValue("Uno-App/\(currentVersion)", forHTTPHeaderField: "User-Agent")
-        
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            DispatchQueue.main.async {
-                self?.handleUpdateResponse(data: data, response: response as? HTTPURLResponse, error: error)
-            }
-        }.resume()
     }
     
-    private func handleUpdateResponse(data: Data?, response: HTTPURLResponse?, error: Error?) {
-        defer {
-            isChecking = false
-            updateStatusIcon()
+    private func performNetworkRequest(_ request: URLRequest) {
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            self?.performanceMonitor.trackOperation("handleUpdateResponse") {
+                DispatchQueue.main.async {
+                    if let error = error {
+                        self?.handleNetworkError(error)
+                    } else {
+                        self?.handleUpdateResponse(data: data, response: response as? HTTPURLResponse)
+                    }
+                }
+            }
         }
-        
-        if let error = error {
-            print("Network error: \(error)")
+        task.resume()
+    }
+    
+    private func handleNetworkError(_ error: Error) {
+        if retryCount < maxRetries {
+            retryCount += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(retryCount * 2)) {
+                self.checkForUpdates()
+            }
+        } else {
+            retryCount = 0
             self.error = "Network error: \(error.localizedDescription)"
-            return
+            self.isChecking = false
+            self.updateStatusIcon()
+        }
+    }
+    
+    private func handleUpdateResponse(data: Data?, response: HTTPURLResponse?) {
+        defer {
+            DispatchQueue.main.async { [weak self] in
+                self?.isChecking = false
+                self?.updateStatusIcon()
+            }
         }
         
-        guard let response = response else {
-            print("Invalid response")
-            self.error = "Invalid response from server"
-            return
-        }
-        
-        print("Response status code: \(response.statusCode)")
-        
-        guard response.statusCode == 200 else {
-            self.error = "Server error: \(response.statusCode)"
-            return
-        }
-        
-        guard let data = data else {
-            self.error = "No data received"
+        guard let response = response, 
+              response.statusCode == 200,
+              let data = data else {
+            let errorMessage = "Invalid response from server"
+            logger.error("\(errorMessage)")
+            handleError(NSError(domain: "UpdateChecker",
+                              code: response?.statusCode ?? -1,
+                              userInfo: [NSLocalizedDescriptionKey: errorMessage]))
             return
         }
         
         do {
-            
-            let decoder = JSONDecoder()
-            let release = try decoder.decode(GitHubRelease.self, from: data)
-            
-            let cleanLatestVersion = release.tagName.replacingOccurrences(of: "v", with: "")
-            print("Latest version: \(cleanLatestVersion)")
-            print("Current version for comparison: \(currentVersion)")
-            
-            updateAvailable = compareVersions(current: currentVersion, latest: cleanLatestVersion)
-                        if updateAvailable {
-                            DispatchQueue.main.async {
-                                self.onUpdateAvailable?()
-                            }
-                        }
-            
-            latestVersion = cleanLatestVersion
-            releaseNotes = release.body
-            downloadURL = URL(string: release.htmlUrl)
-            
-            updateAvailable = compareVersions(current: currentVersion, latest: cleanLatestVersion)
-            print("Update available: \(updateAvailable)")
-            
+            let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+            DispatchQueue.main.async { [weak self] in
+                self?.processRelease(release)
+            }
         } catch {
-            print("Parsing error: \(error)")
-            self.error = "Failed to parse response: \(error.localizedDescription)"
+            handleError(error)
         }
+    }
+    
+    private func processRelease(_ release: GitHubRelease) {
+        let cleanLatestVersion = release.tagName.replacingOccurrences(of: "v", with: "")
+        print("Latest version: \(cleanLatestVersion)")
+        print("Current version for comparison: \(currentVersion)")
+        
+        updateAvailable = compareVersions(current: currentVersion, latest: cleanLatestVersion)
+        if updateAvailable {
+            DispatchQueue.main.async {
+                self.onUpdateAvailable?()
+            }
+        }
+        
+        latestVersion = cleanLatestVersion
+        releaseNotes = release.body
+        downloadURL = URL(string: release.htmlUrl)
+        
+        print("Update available: \(updateAvailable)")
     }
     
     private func compareVersions(current: String, latest: String) -> Bool {
@@ -174,6 +185,24 @@ class UpdateChecker: ObservableObject {
         
         print("Versions are equal")
         return false
+    }
+    
+    private func createUpdateRequest() -> URLRequest {
+        let url = URL(string: "https://api.github.com/repos/\(githubRepo)/releases/latest")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/vnd.github.v3+json", forHTTPHeaderField: "Accept")
+        return request
+    }
+    
+    private func handleError(_ error: Error?) {
+        let errorMessage = error?.localizedDescription ?? "Unknown error occurred"
+        logger.error("Update check error: \(errorMessage)")
+        DispatchQueue.main.async {
+            self.error = errorMessage
+            self.isChecking = false
+            self.updateStatusIcon()
+        }
     }
     
     deinit {

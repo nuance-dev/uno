@@ -2,6 +2,7 @@ import SwiftUI
 import PDFKit
 import UniformTypeIdentifiers
 import os
+import AppKit
 
 private let logger = Logger(subsystem: "me.nuanc.Uno", category: "FileProcessor")
 
@@ -23,6 +24,10 @@ class FileProcessor: ObservableObject {
     @Published var error: String?
     @Published var progress: Double = 0
     @Published private(set) var lastProcessedFiles: [URL] = []
+
+    private let processingQueue = DispatchQueue(label: "me.nuanc.Uno.processing", qos: .userInitiated, attributes: .concurrent)
+    private let progressQueue = DispatchQueue(label: "me.nuanc.Uno.progress")
+    private let maxConcurrentOperations = 4
     
     let supportedTypes = [
         // Code files
@@ -70,22 +75,24 @@ class FileProcessor: ObservableObject {
     private let maxFileSize: Int64 = 500 * 1024 * 1024 // 500MB limit
     private let chunkSize = 1024 * 1024 // 1MB chunks for processing
     
+    private let memoryManager = MemoryManager.shared
+    private let performanceMonitor = PerformanceMonitor.shared
+    
     func processFiles(mode: ContentView.Mode) {
-        currentMode = mode
-        logger.debug("Starting file processing in mode")
-        isProcessing = true
-        error = nil
-        progress = 0
-        
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // Explicitly type the operation closure
+        let operation: () -> Void = { [weak self] in
             guard let self = self else { return }
             
-            let sortedFiles = self.files.sorted { $0.lastPathComponent < $1.lastPathComponent }
-            
-            // Validate files
-            for url in sortedFiles {
-                if !self.validateFile(url) { return }
+            // Set initial state on main thread
+            DispatchQueue.main.async {
+                self.currentMode = mode
+                self.isProcessing = true
+                self.error = nil
+                self.progress = 0
             }
+            
+            // Process files
+            let sortedFiles = self.files.sorted { $0.lastPathComponent < $1.lastPathComponent }
             
             switch mode {
             case .prompt:
@@ -94,42 +101,70 @@ class FileProcessor: ObservableObject {
                 self.processFilesForPDF(sortedFiles)
             }
         }
+        
+        // Execute the operation with explicit typing
+        performanceMonitor.trackOperation("processFiles", operation: operation)
     }
     
     private func processFilesForPrompt(_ files: [URL]) {
-        var result = ""
         let totalFiles = Double(files.count)
         
+        let operationQueue = OperationQueue()
+        operationQueue.maxConcurrentOperationCount = maxConcurrentOperations
+        
+        var results: [(index: Int, content: String)] = []
+        let resultsQueue = DispatchQueue(label: "me.nuanc.Uno.results")
+        let group = DispatchGroup()
+        
         for (index, url) in files.enumerated() {
-            autoreleasepool {
-                do {
-                    // Update progress more frequently
-                    DispatchQueue.main.async {
-                        self.progress = Double(index) / totalFiles
-                    }
-                    
-                    if url.pathExtension.lowercased() == "pdf" {
-                        if let pdf = PDFDocument(url: url),
-                           let text = pdf.string {
-                            result += "<\(url.lastPathComponent)>\n\(text)\n</\(url.lastPathComponent)>\n\n"
+            group.enter()
+            
+            operationQueue.addOperation {
+                autoreleasepool {
+                    do {
+                        let content: String
+                        
+                        switch url.pathExtension.lowercased() {
+                        case "doc", "docx":
+                            content = try DocumentProcessor.extractText(from: url)
+                        case "pdf":
+                            if let pdf = PDFDocument(url: url),
+                               let text = pdf.string {
+                                content = text
+                            } else {
+                                throw NSError(domain: "PDFError", code: -1, userInfo: [NSLocalizedDescriptionKey: "Could not extract text from PDF"])
+                            }
+                        default:
+                            content = try String(contentsOf: url, encoding: .utf8)
                         }
-                    } else {
-                        let content = try String(contentsOf: url, encoding: .utf8)
-                        result += "<\(url.lastPathComponent)>\n\(content)\n</\(url.lastPathComponent)>\n\n"
+                        
+                        // Wrap content with filename tags
+                        let wrappedContent = "<\(url.lastPathComponent)>\n\(content)\n</\(url.lastPathComponent)>"
+                        
+                        resultsQueue.async {
+                            results.append((index, wrappedContent))
+                        }
+                        
+                        DispatchQueue.main.async {
+                            self.progress = Double(index + 1) / totalFiles
+                        }
+                        
+                    } catch {
+                        logger.error("Error processing file: \(error.localizedDescription)")
+                        DispatchQueue.main.async {
+                            self.error = "Error processing \(url.lastPathComponent): \(error.localizedDescription)"
+                        }
                     }
-                    
-                    // Final progress update
-                    DispatchQueue.main.async {
-                        self.progress = Double(index + 1) / totalFiles
-                    }
-                } catch {
-                    logger.error("Error processing file: \(error.localizedDescription)")
                 }
+                group.leave()
             }
         }
         
-        DispatchQueue.main.async {
-            self.processedContent = result
+        group.notify(queue: .main) {
+            let sortedResults = results.sorted { $0.index < $1.index }
+            let finalContent = sortedResults.map { $0.content }.joined(separator: "\n\n")
+            
+            self.processedContent = finalContent
             self.progress = 1.0
             self.isProcessing = false
         }
@@ -137,80 +172,45 @@ class FileProcessor: ObservableObject {
     
     private func processFilesForPDF(_ files: [URL]) {
         let pdfDocument = PDFDocument()
-        let totalFiles = Double(files.count)
+        let chunks = files.chunked(into: memoryManager.recommendedChunkSize)
         
-        for (index, url) in files.enumerated() {
+        for (index, chunk) in chunks.enumerated() {
             autoreleasepool {
-                do {
-                    let _: PDFPage?
-                    
-                    switch url.pathExtension.lowercased() {
-                    case "pdf":
-                        if let existingPDF = PDFDocument(url: url) {
-                            for i in 0..<existingPDF.pageCount {
-                                if let page = existingPDF.page(at: i) {
-                                    pdfDocument.insert(page, at: pdfDocument.pageCount)
-                                }
-                            }
-                        }
-                        
-                    case "jpg", "jpeg", "png", "gif", "heic", "tiff":
-                        if let image = NSImage(contentsOf: url),
-                           let page = createPDFPage(from: image) {
-                            pdfDocument.insert(page, at: pdfDocument.pageCount)
-                        }
-                        
-                    default:
-                        if let textPage = createPDFPage(from: url) {
-                            pdfDocument.insert(textPage, at: pdfDocument.pageCount)
-                        }
-                    }
-                    
-                    DispatchQueue.main.async {
-                        self.progress = Double(index + 1) / totalFiles
-                    }
+                processChunk(chunk, into: pdfDocument)
+                DispatchQueue.main.async {
+                    self.progress = Double(index + 1) / Double(chunks.count)
                 }
+                memoryManager.cleanupIfNeeded()
             }
         }
         
         DispatchQueue.main.async {
             self.processedPDF = pdfDocument
-            self.progress = 1.0
             self.isProcessing = false
         }
     }
     
-    private func createPDFPage(from image: NSImage) -> PDFPage? {
-        let imageRect = CGRect(x: 0, y: 0, width: 612, height: 792)
-        let pdfData = NSMutableData()
-        
-        guard let context = CGContext(consumer: CGDataConsumer(data: pdfData as CFMutableData)!,
-                                    mediaBox: nil,
-                                    nil) else { return nil }
-        
-        context.beginPDFPage(nil)
-        
-        // Calculate aspect ratio preserving dimensions
-        let imageSize = image.size
-        let scale = min(imageRect.width / imageSize.width,
-                       imageRect.height / imageSize.height)
-        let scaledWidth = imageSize.width * scale
-        let scaledHeight = imageSize.height * scale
-        let x = (imageRect.width - scaledWidth) / 2
-        let y = (imageRect.height - scaledHeight) / 2
-        
-        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
-            context.draw(cgImage, in: CGRect(x: x, y: y, width: scaledWidth, height: scaledHeight))
+    private func processChunk(_ files: [URL], into pdfDocument: PDFDocument) {
+        for file in files {
+            autoreleasepool {
+                // Process single file
+                if let page = createPDFPage(from: file) {
+                    pdfDocument.insert(page, at: pdfDocument.pageCount)
+                }
+            }
         }
-        
-        context.endPDFPage()
-        context.closePDF()
-        
-        guard let pdfDocument = PDFDocument(data: pdfData as Data) else { return nil }
-        return pdfDocument.page(at: 0)
     }
     
     private func createPDFPage(from url: URL) -> PDFPage? {
+        // Handle image files
+        if ["jpg", "jpeg", "png", "gif", "heic", "tiff", "webp"].contains(url.pathExtension.lowercased()) {
+            if let image = NSImage(contentsOf: url) {
+                return createPDFPage(from: image)
+            }
+            return nil
+        }
+        
+        // Handle text files
         do {
             let content = try String(contentsOf: url, encoding: .utf8)
             
@@ -232,54 +232,24 @@ class FileProcessor: ObservableObject {
             let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792) // US Letter
             let pdfData = NSMutableData()
             
-            guard let consumer = CGDataConsumer(data: pdfData as CFMutableData) else { return nil }
-            
-            // Create PDF context with white background
             var mediaBox = CGRect(origin: .zero, size: pageRect.size)
+            guard let context = CGContext(consumer: CGDataConsumer(data: pdfData as CFMutableData)!,
+                                        mediaBox: &mediaBox,
+                                        nil) else { return nil }
             
-            guard let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
-                return nil
-            }
+            context.beginPDFPage(nil as CFDictionary?)
             
-            // Start PDF page
-            context.beginPage(mediaBox: &mediaBox)
-            
-            // Fill white background explicitly
-            context.setFillColor(CGColor(gray: 1.0, alpha: 1.0))
-            context.fill(mediaBox)
-            
-            // Add header with file info
-            let headerAttributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 10, weight: .medium),
-                .foregroundColor: NSColor.darkGray
-            ]
-            
-            let headerText = "\(url.lastPathComponent)"
-            let headerString = NSAttributedString(string: headerText, attributes: headerAttributes)
-            
-            // Draw header
-            let headerRect = CGRect(x: 50, y: pageRect.height - 40, width: pageRect.width - 100, height: 20)
-            
-            // Create content frame
-            let contentRect = CGRect(x: 50, y: 50, width: pageRect.width - 100, height: pageRect.height - 100)
-            let path = CGPath(rect: contentRect, transform: nil)
-            
-            // Draw content
+            // Draw the text
             let framesetter = CTFramesetterCreateWithAttributedString(attributedString)
-            let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: 0), path, nil)
+            let textRect = pageRect.insetBy(dx: 50, dy: 50) // Add margins
+            let path = CGPath(rect: textRect, transform: nil)
+            let frame = CTFramesetterCreateFrame(framesetter, CFRangeMake(0, attributedString.length), path, nil)
             
-            // Draw header (in correct orientation)
-            context.saveGState()
-            context.textMatrix = .identity
-            headerString.draw(in: headerRect)
-            context.restoreGState()
-            
-            // Draw main content
-            context.saveGState()
+            context.translateBy(x: 0, y: pageRect.height)
+            context.scaleBy(x: 1.0, y: -1.0)
             CTFrameDraw(frame, context)
-            context.restoreGState()
             
-            context.endPage()
+            context.endPDFPage()
             context.closePDF()
             
             guard let pdfDocument = PDFDocument(data: pdfData as Data) else { return nil }
@@ -288,6 +258,37 @@ class FileProcessor: ObservableObject {
             logger.error("Error creating PDF page: \(error.localizedDescription)")
             return nil
         }
+    }
+    
+    private func createPDFPage(from image: NSImage) -> PDFPage? {
+        let imageRect = CGRect(x: 0, y: 0, width: 612, height: 792) // US Letter
+        let pdfData = NSMutableData()
+        
+        var mediaBox = CGRect(origin: .zero, size: imageRect.size)
+        guard let context = CGContext(consumer: CGDataConsumer(data: pdfData as CFMutableData)!,
+                                    mediaBox: &mediaBox,
+                                    nil) else { return nil }
+        
+        context.beginPDFPage(nil as CFDictionary?)
+        
+        // Calculate aspect ratio preserving dimensions
+        let imageSize = image.size
+        let scale = min(imageRect.width / imageSize.width,
+                       imageRect.height / imageSize.height)
+        let scaledWidth = imageSize.width * scale
+        let scaledHeight = imageSize.height * scale
+        let x = (imageRect.width - scaledWidth) / 2
+        let y = (imageRect.height - scaledHeight) / 2
+        
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            context.draw(cgImage, in: CGRect(x: x, y: y, width: scaledWidth, height: scaledHeight))
+        }
+        
+        context.endPDFPage()
+        context.closePDF()
+        
+        guard let pdfDocument = PDFDocument(data: pdfData as Data) else { return nil }
+        return pdfDocument.page(at: 0)
     }
     
     func clearFiles() {
@@ -307,7 +308,7 @@ class FileProcessor: ObservableObject {
         }
     }
     
-    private func validateFile(_ url: URL) -> Bool {
+    func validateFile(_ url: URL) -> Bool {
         do {
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
             let fileSize = attributes[.size] as? Int64 ?? 0
@@ -329,4 +330,22 @@ class FileProcessor: ObservableObject {
             return false
         }
     }
+    
+    func moveFile(from source: Int, to destination: Int) {
+        files.move(fromOffsets: IndexSet(integer: source), toOffset: destination)
+        processFiles(mode: currentMode)
+    }
+    
+    func removeFile(_ url: URL) {
+        if let index = files.firstIndex(of: url) {
+            files.remove(at: index)
+            processFiles(mode: currentMode)
+        }
+    }
+}
+
+// Helper class to track processing state
+private class ProcessingState {
+    var isCompleted: Bool = false
+    var error: Error?
 } 

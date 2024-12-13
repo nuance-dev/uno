@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ToolbarButton: View {
     let title: String
@@ -7,33 +8,49 @@ struct ToolbarButton: View {
     let isFirst: Bool
     let isLast: Bool
     
+    @State private var isHovered = false
+    @Environment(\.colorScheme) var colorScheme
+    
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .font(.system(size: 14))
+                    .font(.system(size: 12, weight: .medium))
                 Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
             }
-            .frame(height: 36)
-            .padding(.horizontal, 16)
-            .foregroundColor(.primary)
-            .background(Color.clear)
-            .contentShape(Rectangle())
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(height: 32)
+            .background(
+                ZStack {
+                    if isHovered {
+                        RoundedRectangle(cornerRadius: isFirst ? 12 : isLast ? 12 : 0)
+                            .fill(Color.primary.opacity(0.06))
+                    }
+                }
+            )
         }
         .buttonStyle(PlainButtonStyle())
+        .onHover { hover in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isHovered = hover
+            }
+        }
     }
 }
 
 struct ButtonDivider: View {
     var body: some View {
-        Divider()
-            .frame(height: 24)
+        Rectangle()
+            .frame(width: 1)
+            .foregroundColor(Color.primary.opacity(0.1))
     }
 }
 
 struct ButtonGroup: View {
     let buttons: [(title: String, icon: String, action: () -> Void)]
+    @Environment(\.colorScheme) var colorScheme
     
     var body: some View {
         HStack(spacing: 0) {
@@ -51,22 +68,17 @@ struct ButtonGroup: View {
                 )
             }
         }
-        .background(backgroundView)
-    }
-    
-    private var backgroundView: some View {
-        ZStack {
-            // Base background
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(NSColor.windowBackgroundColor).opacity(0.5))
-            
-            // Subtle border
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
-            
-            // Glass effect overlay
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.white.opacity(0.1), lineWidth: 1)
-        }
+        .background(
+            ZStack {
+                VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
+                
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.02))
+                
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.primary.opacity(colorScheme == .dark ? 0.1 : 0.05), lineWidth: 0.5)
+            }
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
