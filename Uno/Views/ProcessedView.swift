@@ -1,6 +1,7 @@
 import SwiftUI
 import PDFKit
 import os
+import UserNotifications
 
 private let logger = Logger(subsystem: "me.nuanc.Uno", category: "ProcessedView")
 
@@ -12,54 +13,170 @@ struct ProcessedView: View {
     @State private var showError = false
     @State private var errorMessage = ""
     @State private var zoomLevel: Double = 1.0
+    @State private var selectedView: ViewMode = .processed
     
-    var clearButton: some View {
-        Button(action: {
-            showingClearConfirmation = true
-        }) {
-            HStack(spacing: 6) {
-                Image(systemName: "trash")
-                Text("Clear All")
-                    .font(.system(size: 13, weight: .medium))
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.red.opacity(0.1))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.red.opacity(0.2), lineWidth: 1)
-            )
-            .foregroundColor(.red)
-        }
-        .buttonStyle(PlainButtonStyle())
-        .help("Clear all files")
-        .confirmationDialog(
-            "Clear All Files",
-            isPresented: $showingClearConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("Clear All", role: .destructive) {
-                withAnimation(.spring(response: 0.3)) {
-                    processor.clearFiles()
-                }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Are you sure you want to clear all files? This action cannot be undone.")
-        }
+    enum ViewMode {
+        case files, processed
     }
     
     var body: some View {
-        VStack(spacing: 10) {
-            HStack {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
+        VStack(spacing: 0) {
+            // Top toolbar
+            HStack(spacing: 16) {
+                // View mode selector
+                HStack(spacing: 0) {
+                    Button(action: { selectedView = .files }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "folder")
+                                .font(.system(size: 12))
+                            Text("Files")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            selectedView == .files ? 
+                                Color.accentColor.opacity(0.2) : 
+                                Color.clear
+                        )
+                        .foregroundColor(selectedView == .files ? .accentColor : .secondary)
+                        .cornerRadius(6)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    
+                    Button(action: { selectedView = .processed }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: mode == .prompt ? "doc.text" : "doc.richtext")
+                                .font(.system(size: 12))
+                            Text(mode == .prompt ? "Prompt" : "PDF")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            selectedView == .processed ? 
+                                Color.accentColor.opacity(0.2) : 
+                                Color.clear
+                        )
+                        .foregroundColor(selectedView == .processed ? .accentColor : .secondary)
+                        .cornerRadius(6)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.secondary.opacity(0.1))
+                )
+                
+                Spacer()
+                
+                if !processor.files.isEmpty {
+                    // Action buttons
+                    if mode == .prompt && selectedView == .processed {
+                        Button(action: copyToClipboard) {
+                            Label(
+                                isCopied ? "Copied" : "Copy",
+                                systemImage: isCopied ? "checkmark" : "doc.on.clipboard"
+                            )
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(isCopied ? .green : .accentColor)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color.accentColor.opacity(0.1))
+                            )
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    } else if mode == .pdf && selectedView == .processed {
+                        Button(action: savePDF) {
+                            Label("Save PDF", systemImage: "arrow.down.doc")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.accentColor)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(Color.accentColor.opacity(0.1))
+                                )
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .disabled(processor.processedPDF == nil)
+                    }
+                    
+                    Button(action: { showingClearConfirmation = true }) {
+                        Label("Clear", systemImage: "trash")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color.secondary.opacity(0.1))
+                            )
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                    .confirmationDialog(
+                        "Clear All Files",
+                        isPresented: $showingClearConfirmation,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Clear All", role: .destructive) {
+                            withAnimation(.spring(response: 0.3)) {
+                                processor.clearFiles()
+                            }
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Are you sure you want to clear all files? This action cannot be undone.")
+                    }
+                }
+            }
+            .padding(.bottom, 12)
+            
+            // Main Content
+            Group {
+                if selectedView == .files {
+                    fileListView
+                } else {
+                    if mode == .prompt {
+                        promptResultView
+                    } else {
+                        pdfResultView
+                    }
+                }
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.secondary.opacity(0.05))
+            )
+            
+            if let error = processor.error {
+                ErrorBanner(message: error)
+                    .padding(.top, 12)
+            }
+        }
+    }
+    
+    // File list view showing tree structure
+    var fileListView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Files")
+                .font(.headline)
+                .padding(16)
+            
+            Divider()
+                .opacity(0.3)
+            
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let fileTree = processor.fileTree {
+                        FileTreeView(node: fileTree)
+                    } else {
+                        // Flat file list as fallback
                         ForEach(processor.files, id: \.self) { url in
-                            FileTag(url: url) {
-                                withAnimation(.spring(response: 0.3)) {
+                            FileItemView(url: url) {
+                                withAnimation {
                                     if let index = processor.files.firstIndex(of: url) {
                                         processor.files.remove(at: index)
                                     }
@@ -67,141 +184,93 @@ struct ProcessedView: View {
                             }
                         }
                     }
-                    .padding(.horizontal)
                 }
-                
-                if !processor.files.isEmpty {
-                    clearButton
-                }
-            }
-            .frame(height: 40)
-            
-            // Result View
-            if mode == .prompt {
-                PromptView(content: processor.processedContent, isCopied: $isCopied)
-            } else {
-                PDFPreviewView(processor: processor, pdfDocument: processor.processedPDF)
-            }
-            
-            if let error = processor.error {
-                ErrorBanner(message: error)
+                .padding(16)
             }
         }
     }
-}
-
-struct FileTag: View {
-    let url: URL
-    let onRemove: () -> Void
     
-    private var fileIcon: String {
-        switch url.pathExtension.lowercased() {
-        case "pdf": return "doc.fill"
-        case "swift": return "swift"
-        case "js": return "logo.javascript"
-        case "ts": return "t.square"
-        case "html": return "chevron.left.forwardslash.chevron.right"
-        case "css": return "paintbrush.fill"
-        default: return "doc.text"
-        }
-    }
-    
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: fileIcon)
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-            
-            Text(url.lastPathComponent)
-                .font(.system(size: 11, weight: .medium))
-                .lineLimit(1)
-            
-            Button(action: onRemove) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(.secondary.opacity(0.8))
-            }
-            .buttonStyle(PlainButtonStyle())
-            .opacity(0.6)
-            .contentShape(Rectangle())
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            ZStack {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color(NSColor.controlBackgroundColor).opacity(0.8))
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
-            }
-        )
-        .transition(.scale.combined(with: .opacity))
-    }
-}
-
-struct PromptView: View {
-    let content: String
-    @Binding var isCopied: Bool
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text("Output")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.secondary)
-                
-                Spacer()
-                
-                if !content.isEmpty {
-                    Button(action: copyToClipboard) {
-                        HStack(spacing: 4) {
-                            Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
-                                .font(.system(size: 11))
-                            Text(isCopied ? "Copied" : "Copy")
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.accentColor.opacity(0.1))
-                        )
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+    // Prompt result view
+    var promptResultView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Prompt Output")
+                .font(.headline)
+                .padding(16)
             
             Divider()
-                .opacity(0.5)
+                .opacity(0.3)
             
-            if content.isEmpty {
+            if processor.processedContent.isEmpty {
                 EmptyStateView()
+            } else if let attributedContent = processor.processedAttributedContent, processor.useSyntaxHighlighting {
+                // Use attributed text with syntax highlighting
+                AttributedTextView(attributedString: attributedContent)
             } else {
+                // Use plain text
                 ScrollView {
-                    Text(content)
+                    Text(processor.processedContent)
                         .font(.system(.body, design: .monospaced))
-                        .padding(12)
+                        .padding(16)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .textSelection(.enabled)
                 }
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(NSColor.controlBackgroundColor).opacity(0.7))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.primary.opacity(0.05), lineWidth: 1)
-                )
-        )
+    }
+    
+    // PDF result view
+    var pdfResultView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("PDF Preview")
+                    .font(.headline)
+                
+                Spacer()
+                
+                if processor.processedPDF != nil {
+                    HStack(spacing: 8) {
+                        Button(action: { zoomLevel = max(0.25, zoomLevel - 0.25) }) {
+                            Image(systemName: "minus.magnifyingglass")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        
+                        Text("\(Int(zoomLevel * 100))%")
+                            .font(.system(size: 12, weight: .medium))
+                            .frame(width: 40)
+                        
+                        Button(action: { zoomLevel = min(4.0, zoomLevel + 0.25) }) {
+                            Image(systemName: "plus.magnifyingglass")
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.secondary.opacity(0.1))
+                    )
+                }
+            }
+            .padding(16)
+            
+            Divider()
+                .opacity(0.3)
+            
+            if let pdf = processor.processedPDF {
+                EnhancedPDFKitView(pdfDocument: pdf, zoomLevel: zoomLevel)
+            } else {
+                EmptyStateView()
+            }
+        }
     }
     
     private func copyToClipboard() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(content, forType: .string)
+        NSPasteboard.general.setString(processor.processedContent, forType: .string)
         
         withAnimation {
             isCopied = true
@@ -211,162 +280,6 @@ struct PromptView: View {
             withAnimation {
                 isCopied = false
             }
-        }
-    }
-}
-
-struct EmptyStateView: View {
-    var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "doc.text.fill")
-                .font(.system(size: 32))
-                .foregroundColor(.secondary.opacity(0.5))
-            Text("Add files to generate output")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
-    }
-}
-
-struct ErrorBanner: View {
-    let message: String
-    
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.red)
-            Text(message)
-                .font(.system(size: 12))
-            Spacer()
-        }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.red.opacity(0.1))
-        )
-        .padding(.horizontal)
-    }
-}
-
-// PDFKit wrapper
-struct PDFKitView: NSViewRepresentable {
-    let pdfDocument: PDFKit.PDFDocument
-    
-    func makeNSView(context: Context) -> PDFKit.PDFView {
-        let pdfView = PDFKit.PDFView()
-        pdfView.document = pdfDocument
-        pdfView.autoScales = true
-        pdfView.displayMode = .singlePageContinuous
-        pdfView.backgroundColor = .clear
-        pdfView.displaysPageBreaks = true
-        pdfView.displayDirection = .vertical
-        
-        // Improve default sizing
-        pdfView.scaleFactor = pdfView.scaleFactorForSizeToFit
-        pdfView.maxScaleFactor = 4.0
-        pdfView.minScaleFactor = 0.25
-        
-        // Enable smooth scrolling
-        if let scrollView = pdfView.documentView?.enclosingScrollView {
-            scrollView.hasVerticalScroller = true
-            scrollView.scrollerStyle = .overlay
-            
-            // Set content insets for better presentation
-            scrollView.contentInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        }
-        
-        return pdfView
-    }
-    
-    func updateNSView(_ pdfView: PDFKit.PDFView, context: Context) {
-        pdfView.document = pdfDocument
-        pdfView.scaleFactor = pdfView.scaleFactorForSizeToFit
-        pdfView.needsLayout = true
-        pdfView.layoutDocumentView()
-    }
-}
-
-struct PDFPreviewView: View {
-    @ObservedObject var processor: FileProcessor
-    let pdfDocument: PDFKit.PDFDocument?
-    @State private var showError: Bool = false
-    @State private var errorMessage: String = ""
-    @State private var zoomLevel: CGFloat = 1.0
-    @State private var isSaving: Bool = false
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                Text("PDF Preview")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.secondary)
-                
-                Spacer()
-                
-                if pdfDocument != nil {
-                    HStack(spacing: 12) {
-                        // Zoom controls
-                        HStack(spacing: 8) {
-                            Button(action: { zoomLevel = max(0.25, zoomLevel - 0.25) }) {
-                                Image(systemName: "minus.magnifyingglass")
-                                    .font(.system(size: 12))
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                            
-                            Text("\(Int(zoomLevel * 100))%")
-                                .font(.system(size: 11, weight: .medium))
-                                .frame(width: 40)
-                            
-                            Button(action: { zoomLevel = min(4.0, zoomLevel + 0.25) }) {
-                                Image(systemName: "plus.magnifyingglass")
-                                    .font(.system(size: 12))
-                            }
-                            .buttonStyle(PlainButtonStyle())
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(Color(NSColor.controlBackgroundColor))
-                        )
-                        
-                        Button(action: savePDF) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "square.and.arrow.down")
-                                    .font(.system(size: 11))
-                                Text("Save")
-                                    .font(.system(size: 11, weight: .medium))
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(Color.accentColor.opacity(0.1))
-                            )
-                        }
-                        .buttonStyle(PlainButtonStyle())
-                    }
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            
-            Divider()
-                .opacity(0.5)
-            
-            if let pdf = pdfDocument {
-                EnhancedPDFKitView(pdfDocument: pdf, zoomLevel: zoomLevel)
-            } else {
-                EmptyStateView()
-            }
-        }
-        .alert("Error Saving PDF", isPresented: $showError) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text(errorMessage)
         }
     }
     
@@ -379,18 +292,29 @@ struct PDFPreviewView: View {
             guard response == .OK, let url = savePanel.url else { return }
             
             do {
-                if let pdfDocument = self.pdfDocument {
+                if let pdfDocument = self.processor.processedPDF {
                     try pdfDocument.write(to: url)
                     
                     // Show success feedback
                     DispatchQueue.main.async {
                         NSWorkspace.shared.activateFileViewerSelecting([url])
                         
-                        // Optional: Show success notification
-                        let notification = NSUserNotification()
-                        notification.title = "PDF Saved"
-                        notification.informativeText = "Your PDF has been saved successfully"
-                        NSUserNotificationCenter.default.deliver(notification)
+                        // Replace deprecated NSUserNotification with UNUserNotificationCenter
+                        let content = UNMutableNotificationContent()
+                        content.title = "PDF Saved"
+                        content.body = "Your PDF has been saved successfully"
+                        
+                        let request = UNNotificationRequest(
+                            identifier: UUID().uuidString,
+                            content: content,
+                            trigger: nil
+                        )
+                        
+                        UNUserNotificationCenter.current().add(request) { error in
+                            if let error = error {
+                                logger.error("Notification error: \(error.localizedDescription)")
+                            }
+                        }
                     }
                 } else {
                     throw NSError(
@@ -409,6 +333,202 @@ struct PDFPreviewView: View {
     }
 }
 
+// NSTextView wrapper for displaying attributed text with syntax highlighting
+struct AttributedTextView: NSViewRepresentable {
+    var attributedString: NSAttributedString
+    
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        
+        if let textView = scrollView.documentView as? NSTextView {
+            textView.isEditable = false
+            textView.isSelectable = true
+            textView.textContainerInset = NSSize(width: 16, height: 16)
+            textView.textContainer?.widthTracksTextView = true
+            textView.textContainer?.heightTracksTextView = false
+            textView.backgroundColor = .clear
+            
+            // Setup text view
+            textView.textStorage?.setAttributedString(attributedString)
+            textView.layoutManager?.allowsNonContiguousLayout = true
+            textView.layoutManager?.defaultAttachmentScaling = .scaleProportionallyDown
+        }
+        
+        return scrollView
+    }
+    
+    func updateNSView(_ nsView: NSScrollView, context: Context) {
+        if let textView = nsView.documentView as? NSTextView {
+            textView.textStorage?.setAttributedString(attributedString)
+        }
+    }
+}
+
+// File item view for showing individual files
+struct FileItemView: View {
+    let url: URL
+    let onRemove: () -> Void
+    @State private var isHovering = false
+    
+    var fileIcon: String {
+        switch url.pathExtension.lowercased() {
+        case "pdf": return "doc.fill"
+        case "swift": return "swift"
+        case "js": return "logo.javascript"
+        case "ts": return "t.square"
+        case "html": return "chevron.left.forwardslash.chevron.right"
+        case "css": return "paintbrush.fill"
+        case "py": return "ladybug.fill"
+        case "md", "txt": return "doc.text"
+        case "json": return "curlybraces"
+        case "jpg", "jpeg", "png", "gif", "webp": return "photo"
+        default: return "doc.text"
+        }
+    }
+    
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: fileIcon)
+                .font(.system(size: 14))
+                .foregroundColor(.secondary)
+                .frame(width: 20)
+            
+            Text(url.lastPathComponent)
+                .font(.system(size: 14))
+                .lineLimit(1)
+            
+            Spacer()
+            
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(PlainButtonStyle())
+            .opacity(isHovering ? 1 : 0)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isHovering ? Color.secondary.opacity(0.1) : Color.clear)
+        )
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isHovering = hovering
+            }
+        }
+    }
+}
+
+// File tree view for showing hierarchical file structure
+struct FileTreeView: View {
+    let node: FileNode
+    @State private var isExpanded = true
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if node.type == .directory {
+                Button(action: { isExpanded.toggle() }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                        
+                        Image(systemName: "folder\(isExpanded ? ".fill" : "")")
+                            .font(.system(size: 14))
+                            .foregroundColor(isExpanded ? .accentColor : .secondary)
+                        
+                        Text(node.name)
+                            .font(.system(size: 14, weight: .medium))
+                    }
+                }
+                .buttonStyle(PlainButtonStyle())
+                
+                if isExpanded && !node.children.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(node.children) { child in
+                            FileTreeView(node: child)
+                                .padding(.leading, 20)
+                        }
+                    }
+                }
+            } else {
+                HStack(spacing: 6) {
+                    Image(systemName: fileIconFor(filename: node.name))
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                    
+                    Text(node.name)
+                        .font(.system(size: 14))
+                        .lineLimit(1)
+                }
+                .padding(.vertical, 4)
+            }
+        }
+    }
+    
+    private func fileIconFor(filename: String) -> String {
+        let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
+        
+        switch ext {
+        case "pdf": return "doc.fill"
+        case "swift": return "swift"
+        case "js": return "logo.javascript"
+        case "ts": return "t.square"
+        case "html": return "chevron.left.forwardslash.chevron.right"
+        case "css": return "paintbrush.fill"
+        case "py": return "ladybug.fill"
+        case "md", "txt": return "doc.text"
+        case "json": return "curlybraces"
+        case "jpg", "jpeg", "png", "gif", "webp": return "photo"
+        default: return "doc.text"
+        }
+    }
+}
+
+struct EmptyStateView: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "doc.text.fill")
+                .font(.system(size: 40))
+                .foregroundColor(.secondary.opacity(0.5))
+            
+            Text("No content to display")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.secondary)
+            
+            Text("Add files to generate output")
+                .font(.system(size: 14))
+                .foregroundColor(.secondary.opacity(0.8))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+}
+
+struct ErrorBanner: View {
+    let message: String
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundColor(.red)
+            
+            Text(message)
+                .font(.system(size: 13))
+            
+            Spacer()
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.red.opacity(0.1))
+        )
+    }
+}
+
+// PDFKit wrapper with enhanced UI
 struct EnhancedPDFKitView: NSViewRepresentable {
     let pdfDocument: PDFKit.PDFDocument
     let zoomLevel: CGFloat

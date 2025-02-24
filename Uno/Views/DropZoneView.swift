@@ -4,42 +4,78 @@ struct DropZoneView: View {
     @Binding var isDragging: Bool
     let mode: ContentView.Mode
     let onTap: () -> Void
+    @State private var isHovering = false
     
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 15) {
-                Image(systemName: "arrow.down.circle")
-                    .font(.system(size: 50))
-                    .foregroundColor(.secondary)
+            VStack(spacing: 20) {
+                // Animated icon
+                ZStack {
+                    Circle()
+                        .fill(Color.accentColor.opacity(0.1))
+                        .frame(width: 80, height: 80)
+                    
+                    Circle()
+                        .strokeBorder(Color.accentColor.opacity(0.2), lineWidth: 2)
+                        .frame(width: 80, height: 80)
+                    
+                    Image(systemName: mode == .prompt ? "text.alignleft" : "doc.richtext")
+                        .font(.system(size: 32))
+                        .foregroundColor(.accentColor)
+                }
                 
+                // Main title
                 Text(mode == .prompt ? 
-                     "Drop files or folders to create a prompt" :
+                     "Drop files to create a prompt" :
                      "Drop files to create a PDF")
-                    .font(.title3)
-                    .foregroundColor(.secondary)
+                    .font(.title3.weight(.medium))
+                    .foregroundColor(.primary)
                 
+                // Subtitle
                 Text(mode == .prompt ?
-                     "Supports: Code, docs, config files, and more" :
-                     "Supports: Most document formats and images")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary.opacity(0.8))
+                     "Supports code, docs, images, and more" :
+                     "Combines multiple files into a single document")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 300)
+                
+                // Chip showing supported file types
+                Text(mode == .prompt ?
+                     "TXT • MD • CODE • PDF • JSON • YAML • XML" :
+                     "PDF • TXT • IMAGES • CODE • HTML")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 20)
+                            .fill(Color.secondary.opacity(0.1))
+                    )
+                    .padding(.top, 4)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 15)
-                    .strokeBorder(isDragging ? Color.accentColor : Color.secondary.opacity(0.3),
-                                style: StrokeStyle(lineWidth: 2, dash: [10]))
-                    .background(Color.clear)
-            )
-            .padding()
+            .contentShape(Rectangle())
         }
         .buttonStyle(PlainButtonStyle())
-        .overlay(
-            isDragging ?
-            RoundedRectangle(cornerRadius: 15)
-                .stroke(Color.accentColor, lineWidth: 2)
-                .padding()
-            : nil
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(
+                    isDragging ? Color.accentColor : (isHovering ? Color.secondary.opacity(0.2) : Color.clear),
+                    style: StrokeStyle(
+                        lineWidth: isDragging ? 2 : 1,
+                        dash: isDragging ? [] : [6, 4]
+                    )
+                )
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.secondary.opacity(0.05))
+                )
         )
+        .animation(.easeInOut(duration: 0.2), value: isDragging)
+        .animation(.easeInOut(duration: 0.2), value: isHovering)
+        .onHover { hovering in
+            isHovering = hovering
+        }
     }
 }

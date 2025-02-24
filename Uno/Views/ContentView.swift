@@ -9,6 +9,8 @@ struct ContentView: View {
     @StateObject private var processor = FileProcessor()
     @State private var isDragging = false
     @State private var mode = Mode.prompt
+    @State private var showSettings = false
+    @State private var isAnimating = false
     
     enum Mode: Hashable {
         case prompt
@@ -17,16 +19,23 @@ struct ContentView: View {
     
     var body: some View {
         ZStack {
-            VisualEffectBlur(material: .headerView, blendingMode: .behindWindow)
+            // Frosted glass background
+            VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
                 .ignoresSafeArea()
             
-            VStack(spacing: 10) {
-                modeSwitcher
+            VStack(spacing: 0) {
+                appHeader
+                
+                Divider()
+                    .opacity(0.2)
+                    .padding(.horizontal)
+                
                 mainContent
             }
-            .padding(30)
+            .padding(.vertical, 20)
         }
-        .frame(minWidth: 600, minHeight: 700)
+        .frame(minWidth: 700, minHeight: 700)
+        .preferredColorScheme(.dark)
         .onChange(of: mode, initial: true) { oldValue, newMode in
             processor.setMode(newMode)
         }
@@ -35,40 +44,120 @@ struct ContentView: View {
         }
     }
     
-    private var modeSwitcher: some View {
-        HStack(spacing: 16) {
-            HStack(spacing: 0) {
-                ForEach([Mode.prompt, Mode.pdf], id: \.self) { tabMode in
-                    Button(action: { 
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                            mode = tabMode
+    private var appHeader: some View {
+        HStack(spacing: 20) {
+            // Mode switcher
+            modeSwitcher
+            
+            Spacer()
+            
+            // Settings button (only visible when files are loaded)
+            if !processor.files.isEmpty {
+                Button(action: { showSettings.toggle() }) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                        .frame(width: 32, height: 32)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.accentColor.opacity(0.1))
+                        )
+                }
+                .buttonStyle(PlainButtonStyle())
+                .popover(isPresented: $showSettings, arrowEdge: .top) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Settings")
+                            .font(.headline)
+                            .padding(.bottom, 4)
+                        
+                        Group {
+                            // Common settings for both modes
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Display")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                
+                                Toggle("Syntax Highlighting", isOn: $processor.useSyntaxHighlighting)
+                                    .toggleStyle(SwitchToggleStyle())
+                                    .onChange(of: processor.useSyntaxHighlighting) { oldValue, newValue in
+                                        // Reprocess files to apply syntax highlighting change
+                                        if !processor.files.isEmpty {
+                                            processor.processFiles(mode: mode)
+                                        }
+                                    }
+                            }
+                            
+                            Divider()
+                                .padding(.vertical, 8)
                         }
-                    }) {
-                        Text(tabMode == .prompt ? "Prompt" : "PDF")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(mode == tabMode ? Color(NSColor.controlAccentColor) : Color.secondary)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 36)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(mode == tabMode ? Color(NSColor.controlAccentColor).opacity(0.1) : Color.clear)
-                            )
-                            .contentShape(Rectangle())
+                        
+                        if mode == .prompt {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Prompt Format")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                
+                                Picker("Format", selection: $processor.promptFormat) {
+                                    ForEach(FileProcessor.PromptFormat.allCases) { format in
+                                        Text(format.rawValue).tag(format)
+                                    }
+                                }
+                                .pickerStyle(SegmentedPickerStyle())
+                                .onChange(of: processor.promptFormat) { oldValue, newValue in
+                                    if !processor.files.isEmpty {
+                                        processor.processFiles(mode: mode)
+                                    }
+                                }
+                                
+                                Toggle("Include File Tree", isOn: $processor.includeFileTree)
+                                    .toggleStyle(SwitchToggleStyle())
+                                    .onChange(of: processor.includeFileTree) { oldValue, newValue in
+                                        if !processor.files.isEmpty {
+                                            processor.processFiles(mode: mode)
+                                        }
+                                    }
+                            }
+                        }
                     }
-                    .buttonStyle(PlainButtonStyle())
-                    .frame(width: 120)
+                    .padding()
+                    .frame(width: 280)
                 }
             }
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(NSColor.windowBackgroundColor).opacity(0.5))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-            )
         }
-        .padding(.horizontal)
+        .padding(.horizontal, 30)
+        .padding(.vertical, 10)
+    }
+    
+    private var modeSwitcher: some View {
+        HStack(spacing: 0) {
+            ForEach([Mode.prompt, Mode.pdf], id: \.self) { tabMode in
+                Button(action: { 
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        mode = tabMode
+                    }
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: tabMode == .prompt ? "text.alignleft" : "doc.richtext")
+                            .font(.system(size: 12))
+                        Text(tabMode == .prompt ? "Prompt" : "PDF")
+                            .font(.system(size: 13, weight: .medium))
+                    }
+                    .frame(width: 100, height: 34)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(mode == tabMode ? Color.accentColor : Color.clear)
+                            .opacity(mode == tabMode ? 0.2 : 0)
+                    )
+                    .foregroundColor(mode == tabMode ? Color.accentColor : Color.secondary)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.secondary.opacity(0.1))
+        )
     }
     
     private var mainContent: some View {
@@ -85,6 +174,8 @@ struct ContentView: View {
                 LoaderView(progress: processor.progress)
             }
         }
+        .padding(.horizontal, 30)
+        .padding(.top, 20)
     }
     
     func handleFileSelection() {
@@ -92,8 +183,13 @@ struct ContentView: View {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
-        panel.allowedContentTypes = mode == .prompt ? 
-            [.plainText, .sourceCode] : [.plainText, .pdf, .sourceCode]
+        
+        // Define allowed content types based on mode
+        let allowedTypes: [UTType] = mode == .prompt ? 
+            [.plainText, .sourceCode, .html, .yaml, .json, .xml, .propertyList, .pdf] :
+            [.plainText, .pdf, .image, .html, .rtf, .rtfd]
+        
+        panel.allowedContentTypes = allowedTypes
         
         panel.begin { response in
             if response == .OK {
