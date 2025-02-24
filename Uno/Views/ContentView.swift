@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var mode = Mode.prompt
     @State private var showSettings = false
     @State private var isAnimating = false
+    @Environment(\.colorScheme) private var colorScheme
     
     enum Mode: Hashable {
         case prompt
@@ -35,7 +36,6 @@ struct ContentView: View {
             .padding(.vertical, 20)
         }
         .frame(minWidth: 700, minHeight: 700)
-        .preferredColorScheme(.dark)
         .onChange(of: mode, initial: true) { oldValue, newMode in
             processor.setMode(newMode)
         }
@@ -56,72 +56,18 @@ struct ContentView: View {
                 Button(action: { showSettings.toggle() }) {
                     Image(systemName: "slider.horizontal.3")
                         .font(.system(size: 14))
-                        .foregroundColor(.white)
+                        .foregroundColor(.primary)
                         .frame(width: 32, height: 32)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
-                                .fill(Color.accentColor.opacity(0.1))
+                                .fill(Color.accentColor.opacity(colorScheme == .dark ? 0.1 : 0.08))
                         )
                 }
                 .buttonStyle(PlainButtonStyle())
                 .popover(isPresented: $showSettings, arrowEdge: .top) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Settings")
-                            .font(.headline)
-                            .padding(.bottom, 4)
-                        
-                        Group {
-                            // Common settings for both modes
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Display")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                                
-                                Toggle("Syntax Highlighting", isOn: $processor.useSyntaxHighlighting)
-                                    .toggleStyle(SwitchToggleStyle())
-                                    .onChange(of: processor.useSyntaxHighlighting) { oldValue, newValue in
-                                        // Reprocess files to apply syntax highlighting change
-                                        if !processor.files.isEmpty {
-                                            processor.processFiles(mode: mode)
-                                        }
-                                    }
-                            }
-                            
-                            Divider()
-                                .padding(.vertical, 8)
-                        }
-                        
-                        if mode == .prompt {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Prompt Format")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                                
-                                Picker("Format", selection: $processor.promptFormat) {
-                                    ForEach(FileProcessor.PromptFormat.allCases) { format in
-                                        Text(format.rawValue).tag(format)
-                                    }
-                                }
-                                .pickerStyle(SegmentedPickerStyle())
-                                .onChange(of: processor.promptFormat) { oldValue, newValue in
-                                    if !processor.files.isEmpty {
-                                        processor.processFiles(mode: mode)
-                                    }
-                                }
-                                
-                                Toggle("Include File Tree", isOn: $processor.includeFileTree)
-                                    .toggleStyle(SwitchToggleStyle())
-                                    .onChange(of: processor.includeFileTree) { oldValue, newValue in
-                                        if !processor.files.isEmpty {
-                                            processor.processFiles(mode: mode)
-                                        }
-                                    }
-                            }
-                        }
-                    }
-                    .padding()
-                    .frame(width: 280)
+                    settingsView
                 }
+                .keyboardShortcut(",", modifiers: .command)
             }
         }
         .padding(.horizontal, 30)
@@ -136,19 +82,22 @@ struct ContentView: View {
                         mode = tabMode
                     }
                 }) {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         Image(systemName: tabMode == .prompt ? "text.alignleft" : "doc.richtext")
                             .font(.system(size: 12))
                         Text(tabMode == .prompt ? "Prompt" : "PDF")
                             .font(.system(size: 13, weight: .medium))
                     }
-                    .frame(width: 100, height: 34)
+                    .frame(width: 110, height: 36)
                     .background(
                         RoundedRectangle(cornerRadius: 6)
-                            .fill(mode == tabMode ? Color.accentColor : Color.clear)
-                            .opacity(mode == tabMode ? 0.2 : 0)
+                            .fill(mode == tabMode ? 
+                                Color.accentColor.opacity(colorScheme == .dark ? 0.3 : 0.2) : 
+                                Color.clear)
                     )
-                    .foregroundColor(mode == tabMode ? Color.accentColor : Color.secondary)
+                    .foregroundColor(mode == tabMode ? 
+                        Color.accentColor : 
+                        Color.primary.opacity(0.7))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(PlainButtonStyle())
@@ -156,7 +105,7 @@ struct ContentView: View {
         }
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.1))
+                .fill(Color.secondary.opacity(colorScheme == .dark ? 0.1 : 0.06))
         )
     }
     
@@ -263,6 +212,112 @@ struct ContentView: View {
             }
         } else {
             logger.warning("No valid files found to process")
+        }
+    }
+    
+    private var settingsView: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Settings")
+                .font(.headline)
+                .padding(.bottom, 4)
+            
+            VStack(alignment: .leading, spacing: 8) {
+                // Common settings for both modes
+                Toggle("Use Syntax Highlighting", isOn: $processor.useSyntaxHighlighting)
+                    .toggleStyle(SwitchToggleStyle(tint: Color.accentColor))
+                    .onChange(of: processor.useSyntaxHighlighting) { oldValue, newValue in
+                        if !processor.files.isEmpty {
+                            processor.processFiles(mode: mode)
+                        }
+                    }
+                
+                Toggle("Include File Tree", isOn: $processor.includeFileTree)
+                    .toggleStyle(SwitchToggleStyle(tint: Color.accentColor))
+                    .onChange(of: processor.includeFileTree) { oldValue, newValue in
+                        if !processor.files.isEmpty {
+                            processor.processFiles(mode: mode)
+                        }
+                    }
+                
+                // Mode-specific settings
+                if mode == .prompt {
+                    Divider()
+                    
+                    Text("Prompt Format")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    Picker("Format", selection: $processor.promptFormat) {
+                        ForEach(FileProcessor.PromptFormat.allCases) { format in
+                            Text(format.rawValue).tag(format)
+                        }
+                    }
+                    .pickerStyle(SegmentedPickerStyle())
+                    .onChange(of: processor.promptFormat) { oldValue, newValue in
+                        if !processor.files.isEmpty {
+                            processor.processFiles(mode: mode)
+                        }
+                    }
+                } else if mode == .pdf {
+                    Divider()
+                    
+                    Text("PDF Theme")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                    
+                    Picker("Theme", selection: $processor.pdfTheme) {
+                        ForEach(FileProcessor.PDFTheme.allCases) { theme in
+                            Text(theme.rawValue).tag(theme)
+                        }
+                    }
+                    .pickerStyle(MenuPickerStyle())
+                    .onChange(of: processor.pdfTheme) { oldValue, newValue in
+                        if !processor.files.isEmpty {
+                            processor.processFiles(mode: mode)
+                        }
+                    }
+                    
+                    HStack {
+                        Text("Preview")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        
+                        Spacer()
+                        
+                        // Theme preview
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color(nsColor: themePreviewBackgroundColor(for: processor.pdfTheme)))
+                            .frame(width: 180, height: 24)
+                            .overlay(
+                                Text("function example() { }")
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundColor(Color(nsColor: themePreviewTextColor(for: processor.pdfTheme)))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(Color.secondary.opacity(0.3), lineWidth: 0.5)
+                            )
+                    }
+                }
+            }
+        }
+        .frame(width: 300)
+        .padding(16)
+    }
+    
+    private func themePreviewBackgroundColor(for theme: FileProcessor.PDFTheme) -> NSColor {
+        switch theme {
+        case .light, .github: return NSColor(calibratedRed: 0.98, green: 0.98, blue: 0.98, alpha: 1.0)
+        case .dark: return NSColor(calibratedRed: 0.2, green: 0.22, blue: 0.25, alpha: 1.0)
+        case .monokai: return NSColor(calibratedRed: 0.17, green: 0.18, blue: 0.16, alpha: 1.0)
+        case .solarizedLight: return NSColor(calibratedRed: 0.95, green: 0.93, blue: 0.86, alpha: 1.0)
+        }
+    }
+    
+    private func themePreviewTextColor(for theme: FileProcessor.PDFTheme) -> NSColor {
+        switch theme {
+        case .light, .github, .solarizedLight: return .black
+        case .dark, .monokai: return .white
         }
     }
 }

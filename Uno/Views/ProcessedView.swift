@@ -14,6 +14,7 @@ struct ProcessedView: View {
     @State private var errorMessage = ""
     @State private var zoomLevel: Double = 1.0
     @State private var selectedView: ViewMode = .processed
+    @Environment(\.colorScheme) private var colorScheme
     
     enum ViewMode {
         case files, processed
@@ -36,10 +37,12 @@ struct ProcessedView: View {
                         .padding(.vertical, 6)
                         .background(
                             selectedView == .files ? 
-                                Color.accentColor.opacity(0.2) : 
+                                Color.accentColor.opacity(colorScheme == .dark ? 0.25 : 0.2) : 
                                 Color.clear
                         )
-                        .foregroundColor(selectedView == .files ? .accentColor : .secondary)
+                        .foregroundColor(selectedView == .files ? 
+                            .accentColor : 
+                            (colorScheme == .dark ? Color.secondary : Color.primary).opacity(0.7))
                         .cornerRadius(6)
                     }
                     .buttonStyle(PlainButtonStyle())
@@ -55,17 +58,19 @@ struct ProcessedView: View {
                         .padding(.vertical, 6)
                         .background(
                             selectedView == .processed ? 
-                                Color.accentColor.opacity(0.2) : 
+                                Color.accentColor.opacity(colorScheme == .dark ? 0.25 : 0.2) : 
                                 Color.clear
                         )
-                        .foregroundColor(selectedView == .processed ? .accentColor : .secondary)
+                        .foregroundColor(selectedView == .processed ? 
+                            .accentColor : 
+                            (colorScheme == .dark ? Color.secondary : Color.primary).opacity(0.7))
                         .cornerRadius(6)
                     }
                     .buttonStyle(PlainButtonStyle())
                 }
                 .background(
                     RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.secondary.opacity(0.1))
+                        .fill(Color.secondary.opacity(colorScheme == .dark ? 0.15 : 0.1))
                 )
                 
                 Spacer()
@@ -84,7 +89,10 @@ struct ProcessedView: View {
                             .padding(.vertical, 6)
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.accentColor.opacity(0.1))
+                                    .fill(isCopied ? 
+                                        Color.green.opacity(colorScheme == .dark ? 0.15 : 0.1) : 
+                                        Color.accentColor.opacity(colorScheme == .dark ? 0.15 : 0.1))
+                                    .shadow(color: Color.black.opacity(0.05), radius: 1, x: 0, y: 1)
                             )
                         }
                         .buttonStyle(PlainButtonStyle())
@@ -97,7 +105,8 @@ struct ProcessedView: View {
                                 .padding(.vertical, 6)
                                 .background(
                                     RoundedRectangle(cornerRadius: 6)
-                                        .fill(Color.accentColor.opacity(0.1))
+                                        .fill(Color.accentColor.opacity(colorScheme == .dark ? 0.15 : 0.1))
+                                        .shadow(color: Color.black.opacity(0.05), radius: 1, x: 0, y: 1)
                                 )
                         }
                         .buttonStyle(PlainButtonStyle())
@@ -107,12 +116,13 @@ struct ProcessedView: View {
                     Button(action: { showingClearConfirmation = true }) {
                         Label("Clear", systemImage: "trash")
                             .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.secondary)
+                            .foregroundColor((colorScheme == .dark ? Color.secondary : Color.primary).opacity(0.7))
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.secondary.opacity(0.1))
+                                    .fill(Color.secondary.opacity(colorScheme == .dark ? 0.15 : 0.1))
+                                    .shadow(color: Color.black.opacity(0.05), radius: 1, x: 0, y: 1)
                             )
                     }
                     .buttonStyle(PlainButtonStyle())
@@ -232,7 +242,7 @@ struct ProcessedView: View {
                         Button(action: { zoomLevel = max(0.25, zoomLevel - 0.25) }) {
                             Image(systemName: "minus.magnifyingglass")
                                 .font(.system(size: 12))
-                                .foregroundColor(.secondary)
+                                .foregroundColor(.primary)
                         }
                         .buttonStyle(PlainButtonStyle())
                         
@@ -243,7 +253,7 @@ struct ProcessedView: View {
                         Button(action: { zoomLevel = min(4.0, zoomLevel + 0.25) }) {
                             Image(systemName: "plus.magnifyingglass")
                                 .font(.system(size: 12))
-                                .foregroundColor(.secondary)
+                                .foregroundColor(.primary)
                         }
                         .buttonStyle(PlainButtonStyle())
                     }
@@ -251,7 +261,7 @@ struct ProcessedView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.secondary.opacity(0.1))
+                            .fill(Color.secondary.opacity(colorScheme == .dark ? 0.15 : 0.08))
                     )
                 }
             }
@@ -261,7 +271,7 @@ struct ProcessedView: View {
                 .opacity(0.3)
             
             if let pdf = processor.processedPDF {
-                EnhancedPDFKitView(pdfDocument: pdf, zoomLevel: zoomLevel)
+                EnhancedPDFKitView(pdfDocument: pdf, zoomLevel: CGFloat(zoomLevel))
             } else {
                 EmptyStateView()
             }
@@ -291,8 +301,8 @@ struct ProcessedView: View {
         savePanel.begin { response in
             guard response == .OK, let url = savePanel.url else { return }
             
-            do {
-                if let pdfDocument = self.processor.processedPDF {
+            if let pdfDocument = self.processor.processedPDF {
+                do {
                     try pdfDocument.write(to: url)
                     
                     // Show success feedback
@@ -316,17 +326,16 @@ struct ProcessedView: View {
                             }
                         }
                     }
-                } else {
-                    throw NSError(
-                        domain: "PDFError",
-                        code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "No PDF document available"]
-                    )
+                } catch {
+                    DispatchQueue.main.async {
+                        self.showError = true
+                        self.errorMessage = "Failed to save PDF: \(error.localizedDescription)"
+                    }
                 }
-            } catch {
+            } else {
                 DispatchQueue.main.async {
                     self.showError = true
-                    self.errorMessage = "Failed to save PDF: \(error.localizedDescription)"
+                    self.errorMessage = "No PDF document available"
                 }
             }
         }
@@ -369,20 +378,50 @@ struct FileItemView: View {
     let url: URL
     let onRemove: () -> Void
     @State private var isHovering = false
+    @Environment(\.colorScheme) private var colorScheme
     
     var fileIcon: String {
-        switch url.pathExtension.lowercased() {
+        let ext = url.pathExtension.lowercased()
+        
+        switch ext {
         case "pdf": return "doc.fill"
         case "swift": return "swift"
         case "js": return "logo.javascript"
-        case "ts": return "t.square"
-        case "html": return "chevron.left.forwardslash.chevron.right"
+        case "ts": return "t.square" 
+        case "html", "htm": return "chevron.left.forwardslash.chevron.right"
         case "css": return "paintbrush.fill"
         case "py": return "ladybug.fill"
-        case "md", "txt": return "doc.text"
+        case "md", "markdown", "mdown": return "text.alignleft"
+        case "txt": return "doc.text"
         case "json": return "curlybraces"
-        case "jpg", "jpeg", "png", "gif", "webp": return "photo"
-        default: return "doc.text"
+        case "yml", "yaml": return "list.bullet.indent"
+        case "xml": return "chevron.left.square.fill.chevron.right"
+        case "jpg", "jpeg", "png", "gif", "webp", "heic": return "photo.fill"
+        case "mp3", "wav", "aac", "flac": return "music.note"
+        case "mp4", "mov", "avi", "mkv": return "film.fill"
+        case "zip", "rar", "7z", "tar", "gz": return "archivebox.fill"
+        case "app", "exe": return "app.fill"
+        case "sh", "bash", "zsh": return "terminal.fill"
+        case "gitignore", "dockerignore": return "eye.slash.fill"
+        default: return "doc"
+        }
+    }
+    
+    var fileColor: Color {
+        let ext = url.pathExtension.lowercased()
+        
+        switch ext {
+        case "pdf": return .red
+        case "swift": return .orange
+        case "js", "ts", "jsx", "tsx": return .yellow
+        case "html", "htm", "xml": return .blue
+        case "css", "scss", "less": return .purple
+        case "py": return .green
+        case "md", "markdown", "mdown", "txt": return .gray
+        case "json", "yml", "yaml": return .teal
+        case "jpg", "jpeg", "png", "gif", "webp", "heic": return .pink
+        case "mp3", "wav", "aac", "flac", "mp4", "mov", "avi", "mkv": return .purple
+        default: return .secondary
         }
     }
     
@@ -390,7 +429,7 @@ struct FileItemView: View {
         HStack(spacing: 10) {
             Image(systemName: fileIcon)
                 .font(.system(size: 14))
-                .foregroundColor(.secondary)
+                .foregroundColor(fileColor)
                 .frame(width: 20)
             
             Text(url.lastPathComponent)
@@ -403,6 +442,11 @@ struct FileItemView: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(.secondary)
+                    .frame(width: 20, height: 20)
+                    .background(
+                        Circle()
+                            .fill(Color.secondary.opacity(isHovering ? 0.15 : 0))
+                    )
             }
             .buttonStyle(PlainButtonStyle())
             .opacity(isHovering ? 1 : 0)
@@ -411,7 +455,9 @@ struct FileItemView: View {
         .padding(.horizontal, 12)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isHovering ? Color.secondary.opacity(0.1) : Color.clear)
+                .fill(isHovering ? 
+                    Color.secondary.opacity(colorScheme == .dark ? 0.1 : 0.08) : 
+                    Color.clear)
         )
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.2)) {
@@ -425,45 +471,81 @@ struct FileItemView: View {
 struct FileTreeView: View {
     let node: FileNode
     @State private var isExpanded = true
+    @State private var isHovering = false
+    @Environment(\.colorScheme) private var colorScheme
     
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if node.type == .directory {
-                Button(action: { isExpanded.toggle() }) {
+                Button(action: { 
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        isExpanded.toggle()
+                    }
+                }) {
                     HStack(spacing: 6) {
-                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        // Animated chevron that rotates when expanded/collapsed
+                        Image(systemName: "chevron.right")
                             .font(.system(size: 10))
                             .foregroundColor(.secondary)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .animation(.spring(response: 0.2), value: isExpanded)
                         
-                        Image(systemName: "folder\(isExpanded ? ".fill" : "")")
+                        // Folder icon that changes fill when expanded
+                        Image(systemName: isExpanded ? "folder.fill" : "folder")
                             .font(.system(size: 14))
                             .foregroundColor(isExpanded ? .accentColor : .secondary)
+                            .animation(.easeInOut(duration: 0.1), value: isExpanded)
                         
                         Text(node.name)
                             .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(isExpanded ? .primary : .secondary)
                     }
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(isHovering ? 
+                                Color.secondary.opacity(colorScheme == .dark ? 0.1 : 0.08) : 
+                                Color.clear)
+                    )
+                    .animation(.easeInOut(duration: 0.1), value: isHovering)
                 }
                 .buttonStyle(PlainButtonStyle())
+                .onHover { hovering in
+                    isHovering = hovering
+                }
                 
                 if isExpanded && !node.children.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 2) {
                         ForEach(node.children) { child in
                             FileTreeView(node: child)
                                 .padding(.leading, 20)
                         }
                     }
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             } else {
                 HStack(spacing: 6) {
                     Image(systemName: fileIconFor(filename: node.name))
                         .font(.system(size: 14))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(fileColorFor(filename: node.name))
                     
                     Text(node.name)
                         .font(.system(size: 14))
                         .lineLimit(1)
                 }
                 .padding(.vertical, 4)
+                .padding(.horizontal, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(isHovering ? 
+                            Color.secondary.opacity(colorScheme == .dark ? 0.1 : 0.08) : 
+                            Color.clear)
+                )
+                .onHover { hovering in
+                    isHovering = hovering
+                }
+                .animation(.easeInOut(duration: 0.1), value: isHovering)
             }
         }
     }
@@ -476,13 +558,40 @@ struct FileTreeView: View {
         case "swift": return "swift"
         case "js": return "logo.javascript"
         case "ts": return "t.square"
-        case "html": return "chevron.left.forwardslash.chevron.right"
+        case "html", "htm": return "chevron.left.forwardslash.chevron.right"
         case "css": return "paintbrush.fill"
         case "py": return "ladybug.fill"
-        case "md", "txt": return "doc.text"
+        case "md", "markdown", "mdown": return "text.alignleft"
+        case "txt": return "doc.text"
         case "json": return "curlybraces"
-        case "jpg", "jpeg", "png", "gif", "webp": return "photo"
-        default: return "doc.text"
+        case "yml", "yaml": return "list.bullet.indent"
+        case "xml": return "chevron.left.square.fill.chevron.right"
+        case "jpg", "jpeg", "png", "gif", "webp", "heic": return "photo.fill"
+        case "mp3", "wav", "aac", "flac": return "music.note"
+        case "mp4", "mov", "avi", "mkv": return "film.fill"
+        case "zip", "rar", "7z", "tar", "gz": return "archivebox.fill"
+        case "app", "exe": return "app.fill"
+        case "sh", "bash", "zsh": return "terminal.fill"
+        case "gitignore", "dockerignore": return "eye.slash.fill"
+        default: return "doc"
+        }
+    }
+    
+    private func fileColorFor(filename: String) -> Color {
+        let ext = URL(fileURLWithPath: filename).pathExtension.lowercased()
+        
+        switch ext {
+        case "pdf": return .red
+        case "swift": return .orange
+        case "js", "ts", "jsx", "tsx": return .yellow
+        case "html", "htm", "xml": return .blue
+        case "css", "scss", "less": return .purple
+        case "py": return .green
+        case "md", "markdown", "mdown", "txt": return .gray
+        case "json", "yml", "yaml": return .teal
+        case "jpg", "jpeg", "png", "gif", "webp", "heic": return .pink
+        case "mp3", "wav", "aac", "flac", "mp4", "mov", "avi", "mkv": return .purple
+        default: return .secondary
         }
     }
 }
@@ -533,17 +642,118 @@ struct EnhancedPDFKitView: NSViewRepresentable {
     let pdfDocument: PDFKit.PDFDocument
     let zoomLevel: CGFloat
     
-    func makeNSView(context: Context) -> PDFKit.PDFView {
+    func makeNSView(context: Context) -> NSView {
+        // Create container for PDF view and controls
+        let container = NSView()
+        
+        // Create PDF view
         let pdfView = PDFKit.PDFView()
+        pdfView.translatesAutoresizingMaskIntoConstraints = false
         configurePDFView(pdfView)
-        return pdfView
+        
+        // Create controls container
+        let controlsContainer = NSVisualEffectView()
+        controlsContainer.translatesAutoresizingMaskIntoConstraints = false
+        controlsContainer.material = .menu
+        controlsContainer.blendingMode = .behindWindow
+        controlsContainer.state = .active
+        controlsContainer.wantsLayer = true
+        controlsContainer.layer?.cornerRadius = 8
+        
+        // Create page navigation controls
+        let controlsStack = NSStackView()
+        controlsStack.translatesAutoresizingMaskIntoConstraints = false
+        controlsStack.orientation = .horizontal
+        controlsStack.spacing = 16
+        controlsStack.alignment = .centerY
+        controlsStack.distribution = .gravityAreas
+        
+        // First page button
+        let firstButton = NSButton(image: NSImage(systemSymbolName: "chevron.left.to.line", accessibilityDescription: "First Page")!, target: context.coordinator, action: #selector(Coordinator.goToFirstPage(_:)))
+        firstButton.isBordered = false
+        firstButton.bezelStyle = .roundRect
+        
+        // Previous page button
+        let prevButton = NSButton(image: NSImage(systemSymbolName: "chevron.left", accessibilityDescription: "Previous Page")!, target: context.coordinator, action: #selector(Coordinator.goToPreviousPage(_:)))
+        prevButton.isBordered = false
+        prevButton.bezelStyle = .roundRect
+        
+        // Page label
+        let pageLabel = NSTextField(labelWithString: "Page 1 of \(pdfDocument.pageCount)")
+        pageLabel.translatesAutoresizingMaskIntoConstraints = false
+        pageLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        pageLabel.alignment = .center
+        pageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        context.coordinator.pageLabel = pageLabel
+        
+        // Next page button
+        let nextButton = NSButton(image: NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Next Page")!, target: context.coordinator, action: #selector(Coordinator.goToNextPage(_:)))
+        nextButton.isBordered = false
+        nextButton.bezelStyle = .roundRect
+        
+        // Last page button
+        let lastButton = NSButton(image: NSImage(systemSymbolName: "chevron.right.to.line", accessibilityDescription: "Last Page")!, target: context.coordinator, action: #selector(Coordinator.goToLastPage(_:)))
+        lastButton.isBordered = false
+        lastButton.bezelStyle = .roundRect
+        
+        // Add buttons to stack
+        controlsStack.addArrangedSubview(firstButton)
+        controlsStack.addArrangedSubview(prevButton)
+        controlsStack.addArrangedSubview(pageLabel)
+        controlsStack.addArrangedSubview(nextButton)
+        controlsStack.addArrangedSubview(lastButton)
+        
+        // Add controls to container
+        controlsContainer.addSubview(controlsStack)
+        
+        // Add views to container
+        container.addSubview(pdfView)
+        container.addSubview(controlsContainer)
+        
+        // Store references for the coordinator
+        context.coordinator.pdfView = pdfView
+        
+        // Set constraints
+        NSLayoutConstraint.activate([
+            // PDF view fills the container
+            pdfView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            pdfView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            pdfView.topAnchor.constraint(equalTo: container.topAnchor),
+            pdfView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            
+            // Controls container centered at bottom
+            controlsContainer.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            controlsContainer.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -20),
+            
+            // Control stack within container
+            controlsStack.leadingAnchor.constraint(equalTo: controlsContainer.leadingAnchor, constant: 12),
+            controlsStack.trailingAnchor.constraint(equalTo: controlsContainer.trailingAnchor, constant: -12),
+            controlsStack.topAnchor.constraint(equalTo: controlsContainer.topAnchor, constant: 8),
+            controlsStack.bottomAnchor.constraint(equalTo: controlsContainer.bottomAnchor, constant: -8),
+            
+            // Fixed width for page label
+            pageLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 120)
+        ])
+        
+        return container
     }
     
-    func updateNSView(_ pdfView: PDFKit.PDFView, context: Context) {
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let pdfView = context.coordinator.pdfView else { return }
+        
+        // Update the PDF document and scale
         pdfView.document = pdfDocument
         pdfView.scaleFactor = zoomLevel
         pdfView.needsLayout = true
         pdfView.layoutDocumentView()
+        
+        // Update page label
+        if let pageLabel = context.coordinator.pageLabel, 
+           let currentPage = pdfView.currentPage {
+            // Use pageIndex directly since it's already a non-optional Int
+            let pageIndex = pdfDocument.index(for: currentPage)
+            pageLabel.stringValue = "Page \(pageIndex + 1) of \(pdfDocument.pageCount)"
+        }
     }
     
     private func configurePDFView(_ pdfView: PDFKit.PDFView) {
@@ -563,14 +773,71 @@ struct EnhancedPDFKitView: NSViewRepresentable {
             scrollView.contentInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
         }
         
+        // Configure for better user experience
+        pdfView.acceptsDraggedFiles = false
+        pdfView.enableDataDetectors = false
+        
         // Set initial zoom to fit width
         DispatchQueue.main.async {
             if let firstPage = pdfDocument.page(at: 0) {
                 let pageSize = firstPage.bounds(for: .mediaBox)
                 let viewWidth = pdfView.bounds.width - 40 // Account for insets
-                let scale = viewWidth / pageSize.width
-                pdfView.scaleFactor = scale
+                pdfView.scaleFactor = viewWidth / pageSize.width
             }
+        }
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(pdfDocument)
+    }
+    
+    class Coordinator: NSObject, PDFViewDelegate {
+        let pdfDocument: PDFKit.PDFDocument
+        var pdfView: PDFKit.PDFView?
+        var pageLabel: NSTextField?
+        
+        init(_ pdfDocument: PDFKit.PDFDocument) {
+            self.pdfDocument = pdfDocument
+            super.init()
+        }
+        
+        @objc func goToFirstPage(_ sender: NSButton) {
+            guard let pdfView = pdfView, let firstPage = pdfDocument.page(at: 0) else { return }
+            pdfView.go(to: firstPage)
+            updatePageLabel()
+        }
+        
+        @objc func goToPreviousPage(_ sender: NSButton) {
+            guard let pdfView = pdfView else { return }
+            pdfView.goToPreviousPage(sender)
+            updatePageLabel()
+        }
+        
+        @objc func goToNextPage(_ sender: NSButton) {
+            guard let pdfView = pdfView else { return }
+            pdfView.goToNextPage(sender)
+            updatePageLabel()
+        }
+        
+        @objc func goToLastPage(_ sender: NSButton) {
+            guard let pdfView = pdfView else { return }
+            
+            // Fix: Use pageCount safely with bounds check
+            let lastPageIndex = max(0, pdfDocument.pageCount - 1)
+            if let lastPage = pdfDocument.page(at: lastPageIndex) {
+                pdfView.go(to: lastPage)
+            }
+            updatePageLabel()
+        }
+        
+        private func updatePageLabel() {
+            guard let pdfView = pdfView, 
+                  let pageLabel = pageLabel,
+                  let currentPage = pdfView.currentPage else { return }
+            
+            // Use pageIndex directly since it's already a non-optional Int
+            let pageIndex = pdfDocument.index(for: currentPage)
+            pageLabel.stringValue = "Page \(pageIndex + 1) of \(pdfDocument.pageCount)"
         }
     }
 } 
