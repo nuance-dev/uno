@@ -6,10 +6,6 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXBuildFile section */
-		C87BB7562D6D0CB8003519D7 /* Highlightr in Frameworks */ = {isa = PBXBuildFile; productRef = C87BB7552D6D0CB8003519D7 /* Highlightr */; };
-/* End PBXBuildFile section */
-
 /* Begin PBXFileReference section */
 		C82F044E2CCB3DD20012C07B /* Uno.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Uno.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -27,7 +23,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C87BB7562D6D0CB8003519D7 /* Highlightr in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -70,7 +65,6 @@
 			);
 			name = Uno;
 			packageProductDependencies = (
-				C87BB7552D6D0CB8003519D7 /* Highlightr */,
 			);
 			productName = Uno;
 			productReference = C82F044E2CCB3DD20012C07B /* Uno.app */;
@@ -101,7 +95,6 @@
 			mainGroup = C82F04452CCB3DD20012C07B;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				C87BB7542D6D0CB8003519D7 /* XCRemoteSwiftPackageReference "Highlightr" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = C82F044F2CCB3DD20012C07B /* Products */;
@@ -264,7 +257,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 21;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"Uno/Preview Content\"";
 				DEVELOPMENT_TEAM = YYMLDY74QZ;
@@ -296,7 +289,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 14;
+				CURRENT_PROJECT_VERSION = 21;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"Uno/Preview Content\"";
 				DEVELOPMENT_TEAM = YYMLDY74QZ;
@@ -340,25 +333,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		C87BB7542D6D0CB8003519D7 /* XCRemoteSwiftPackageReference "Highlightr" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/raspu/Highlightr.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.2.1;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		C87BB7552D6D0CB8003519D7 /* Highlightr */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = C87BB7542D6D0CB8003519D7 /* XCRemoteSwiftPackageReference "Highlightr" */;
-			productName = Highlightr;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = C82F04462CCB3DD20012C07B /* Project object */;
 }

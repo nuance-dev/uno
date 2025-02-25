@@ -3,7 +3,6 @@ import PDFKit
 import UniformTypeIdentifiers
 import os
 import Foundation
-import Highlightr // For syntax highlighting
 
 private let logger = Logger(subsystem: "me.nuanc.Uno", category: "FileProcessor")
 
@@ -33,9 +32,6 @@ class FileProcessor: ObservableObject {
     @Published var promptFormat: PromptFormat = .standard
     @Published var useSyntaxHighlighting: Bool = true
     
-    // Highlighter for syntax highlighting
-    private let highlighter = Highlightr()
-    
     enum PromptFormat: String, CaseIterable, Identifiable {
         case standard = "Standard"
         case fileTree = "With File Tree"
@@ -44,7 +40,7 @@ class FileProcessor: ObservableObject {
         var id: String { self.rawValue }
     }
     
-    // Language mappings for syntax highlighting
+    // Language mappings for file type identification
     private let languageMap: [String: String] = [
         "swift": "swift",
         "js": "javascript",
@@ -130,10 +126,7 @@ class FileProcessor: ObservableObject {
     private let maxFileSize: Int64 = 500 * 1024 * 1024 // 500MB limit
     private let chunkSize = 1024 * 1024 // 1MB chunks for processing
     
-    init() {
-        // Set up highlighter theme
-        highlighter?.setTheme(to: "atom-one-dark")
-    }
+    init() {}
     
     func processFiles(mode: ContentView.Mode) {
         currentMode = mode
@@ -249,130 +242,135 @@ class FileProcessor: ObservableObject {
             attributedResult.append(attrFilesTitle)
         }
         
+        // Use parallel processing for files, with a limit on concurrency
+        let processedFiles = files.count
+        let concurrentQueue = DispatchQueue(label: "me.nuanc.Uno.fileProcessing", attributes: .concurrent)
+        let group = DispatchGroup()
+        let resultLock = NSLock()
+        
+        // Container for holding processed results in correct order
+        var processedResults: [(index: Int, content: String, attributedContent: NSAttributedString)] = []
+        
+        // Pre-allocate space
+        processedResults.reserveCapacity(files.count)
+        
+        // Track progress
+        var completedFiles = 0
+        
         for (index, url) in files.enumerated() {
-            autoreleasepool {
-                // Update progress more frequently
-                DispatchQueue.main.async {
-                    self.progress = Double(index) / totalFiles
-                }
-                
-                let fileContent: String
-                let filename = url.lastPathComponent
-                let fileExtension = url.pathExtension.lowercased()
-                
-                do {
-                    if fileExtension == "pdf" {
-                        if let pdf = PDFDocument(url: url),
-                           let text = pdf.string {
-                            fileContent = text
-                        } else {
-                            fileContent = "[PDF content could not be extracted]"
-                        }
-                    } else {
-                        fileContent = try String(contentsOf: url, encoding: .utf8)
-                    }
+            group.enter()
+            concurrentQueue.async {
+                autoreleasepool {
+                    var fileContent: String
+                    let filename = url.lastPathComponent
+                    let fileExtension = url.pathExtension.lowercased()
                     
-                    // Format the output based on selected format
-                    switch promptFormat {
-                    case .standard:
-                        let fileHeader = "<\(filename)>\n"
-                        let fileFooter = "\n</\(filename)>\n\n"
-                        
-                        result += fileHeader + fileContent + fileFooter
-                        
-                        // Create attributed version
-                        let headerAttr = NSAttributedString(string: fileHeader, attributes: titleAttributes)
-                        attributedResult.append(headerAttr)
-                        
-                        // Apply syntax highlighting if enabled
-                        if let language = languageForFile(url), useSyntaxHighlighting {
-                            if let highlighted = highlighter?.highlight(fileContent, as: language) {
-                                attributedResult.append(highlighted)
+                    do {
+                        if fileExtension == "pdf" {
+                            if let pdf = PDFDocument(url: url),
+                               let text = pdf.string {
+                                fileContent = text
                             } else {
-                                let contentAttr = NSAttributedString(string: fileContent, attributes: [
-                                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-                                ])
-                                attributedResult.append(contentAttr)
+                                fileContent = "[PDF content could not be extracted]"
                             }
                         } else {
+                            fileContent = try String(contentsOf: url, encoding: .utf8)
+                        }
+                        
+                        // Process content based on format
+                        let fileResult: String
+                        let attributedFileResult = NSMutableAttributedString()
+                        
+                        switch self.promptFormat {
+                        case .standard:
+                            let fileHeader = "<\(filename)>\n"
+                            let fileFooter = "\n</\(filename)>\n\n"
+                            
+                            fileResult = fileHeader + fileContent + fileFooter
+                            
+                            // Create attributed version
+                            let headerAttr = NSAttributedString(string: fileHeader, attributes: titleAttributes)
+                            attributedFileResult.append(headerAttr)
+                            
                             let contentAttr = NSAttributedString(string: fileContent, attributes: [
                                 .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
                             ])
-                            attributedResult.append(contentAttr)
-                        }
-                        
-                        let footerAttr = NSAttributedString(string: fileFooter, attributes: titleAttributes)
-                        attributedResult.append(footerAttr)
-                        
-                    case .fileTree:
-                        let fileHeader = "<\(filename)>\n"
-                        let fileFooter = "\n</\(filename)>\n\n"
-                        
-                        result += fileHeader + fileContent + fileFooter
-                        
-                        // Create attributed version
-                        let headerAttr = NSAttributedString(string: fileHeader, attributes: titleAttributes)
-                        attributedResult.append(headerAttr)
-                        
-                        // Apply syntax highlighting if enabled
-                        if let language = languageForFile(url), useSyntaxHighlighting {
-                            if let highlighted = highlighter?.highlight(fileContent, as: language) {
-                                attributedResult.append(highlighted)
-                            } else {
-                                let contentAttr = NSAttributedString(string: fileContent, attributes: [
-                                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-                                ])
-                                attributedResult.append(contentAttr)
-                            }
-                        } else {
+                            attributedFileResult.append(contentAttr)
+                            
+                            let footerAttr = NSAttributedString(string: fileFooter, attributes: titleAttributes)
+                            attributedFileResult.append(footerAttr)
+                            
+                        case .fileTree:
+                            let fileHeader = "<\(filename)>\n"
+                            let fileFooter = "\n</\(filename)>\n\n"
+                            
+                            fileResult = fileHeader + fileContent + fileFooter
+                            
+                            // Create attributed version
+                            let headerAttr = NSAttributedString(string: fileHeader, attributes: titleAttributes)
+                            attributedFileResult.append(headerAttr)
+                            
                             let contentAttr = NSAttributedString(string: fileContent, attributes: [
                                 .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
                             ])
-                            attributedResult.append(contentAttr)
-                        }
-                        
-                        let footerAttr = NSAttributedString(string: fileFooter, attributes: titleAttributes)
-                        attributedResult.append(footerAttr)
-                        
-                    case .markdown:
-                        let mdHeader = "## \(filename)\n\n```\(fileExtension)\n"
-                        let mdFooter = "\n```\n\n"
-                        
-                        result += mdHeader + fileContent + mdFooter
-                        
-                        // Create attributed version with markdown styling
-                        let headerAttr = NSAttributedString(string: mdHeader, attributes: titleAttributes)
-                        attributedResult.append(headerAttr)
-                        
-                        // Apply syntax highlighting if enabled
-                        if let language = languageForFile(url), useSyntaxHighlighting {
-                            if let highlighted = highlighter?.highlight(fileContent, as: language) {
-                                attributedResult.append(highlighted)
-                            } else {
-                                let contentAttr = NSAttributedString(string: fileContent, attributes: [
-                                    .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-                                ])
-                                attributedResult.append(contentAttr)
-                            }
-                        } else {
+                            attributedFileResult.append(contentAttr)
+                            
+                            let footerAttr = NSAttributedString(string: fileFooter, attributes: titleAttributes)
+                            attributedFileResult.append(footerAttr)
+                            
+                        case .markdown:
+                            let mdHeader = "## \(filename)\n\n```\(fileExtension)\n"
+                            let mdFooter = "\n```\n\n"
+                            
+                            fileResult = mdHeader + fileContent + mdFooter
+                            
+                            // Create attributed version with markdown styling
+                            let headerAttr = NSAttributedString(string: mdHeader, attributes: titleAttributes)
+                            attributedFileResult.append(headerAttr)
+                            
                             let contentAttr = NSAttributedString(string: fileContent, attributes: [
                                 .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
                             ])
-                            attributedResult.append(contentAttr)
+                            attributedFileResult.append(contentAttr)
+                            
+                            let footerAttr = NSAttributedString(string: mdFooter, attributes: titleAttributes)
+                            attributedFileResult.append(footerAttr)
                         }
                         
-                        let footerAttr = NSAttributedString(string: mdFooter, attributes: titleAttributes)
-                        attributedResult.append(footerAttr)
+                        // Store results to be assembled later in the correct order
+                        resultLock.lock()
+                        processedResults.append((index: index, content: fileResult, attributedContent: attributedFileResult))
+                        
+                        // Update progress
+                        completedFiles += 1
+                        let progress = Double(completedFiles) / totalFiles
+                        DispatchQueue.main.async {
+                            self.progress = progress
+                        }
+                        resultLock.unlock()
+                        
+                    } catch {
+                        logger.error("Error processing file: \(error.localizedDescription)")
+                        
+                        resultLock.lock()
+                        completedFiles += 1
+                        resultLock.unlock()
                     }
-                    
-                    // Final progress update
-                    DispatchQueue.main.async {
-                        self.progress = Double(index + 1) / totalFiles
-                    }
-                } catch {
-                    logger.error("Error processing file: \(error.localizedDescription)")
                 }
+                group.leave()
             }
+        }
+        
+        // Wait for all file processing to complete
+        group.wait()
+        
+        // Sort results to maintain original file order
+        processedResults.sort { $0.index < $1.index }
+        
+        // Combine results in correct order
+        for resultItem in processedResults {
+            result += resultItem.content
+            attributedResult.append(resultItem.attributedContent)
         }
         
         DispatchQueue.main.async {
@@ -403,83 +401,107 @@ class FileProcessor: ObservableObject {
         let pdfDocument = PDFDocument()
         let totalFiles = Double(files.count)
         
+        // Create a dispatch group for parallel processing
+        let group = DispatchGroup()
+        let concurrentQueue = DispatchQueue(label: "me.nuanc.Uno.pdfProcessing", attributes: .concurrent)
+        let resultLock = NSLock()
+        
+        // Container for processed PDF pages
+        var processedPages: [(fileIndex: Int, titlePage: PDFPage?, contentPages: [PDFPage])] = []
+        processedPages.reserveCapacity(files.count)
+        
+        // Track progress
+        var completedFiles = 0
+        
         for (index, url) in files.enumerated() {
-            autoreleasepool {
-                // Update progress
-                DispatchQueue.main.async {
-                    self.progress = Double(index) / totalFiles
-                }
-                
-                do {
-                    switch url.pathExtension.lowercased() {
-                    case "pdf":
-                        if let existingPDF = PDFDocument(url: url) {
-                            // Add document title page with filename
-                            if let titlePage = createTitlePage(for: url.lastPathComponent) {
-                                pdfDocument.insert(titlePage, at: pdfDocument.pageCount)
-                            }
-                            
-                            // Add each page from the existing PDF
-                            for i in 0..<existingPDF.pageCount {
-                                if let page = existingPDF.page(at: i) {
-                                    pdfDocument.insert(page, at: pdfDocument.pageCount)
-                                }
-                            }
-                        } else {
-                            throw NSError(domain: "PDFProcessingError", code: 1, userInfo: [
-                                NSLocalizedDescriptionKey: "Failed to read PDF: \(url.lastPathComponent)"
-                            ])
+            group.enter()
+            concurrentQueue.async {
+                autoreleasepool {
+                    var titlePage: PDFPage?
+                    var contentPages: [PDFPage] = []
+                    
+                    do {
+                        // Create a title page for the file
+                        if let newTitlePage = self.createTitlePage(for: url.lastPathComponent) {
+                            titlePage = newTitlePage
                         }
                         
-                    case "jpg", "jpeg", "png", "gif", "heic", "tiff", "webp":
-                        if let image = NSImage(contentsOf: url),
-                           let titlePage = createTitlePage(for: url.lastPathComponent),
-                           let page = createPDFPage(from: image) {
-                            pdfDocument.insert(titlePage, at: pdfDocument.pageCount)
-                            pdfDocument.insert(page, at: pdfDocument.pageCount)
-                        } else {
-                            throw NSError(domain: "ImageProcessingError", code: 2, userInfo: [
-                                NSLocalizedDescriptionKey: "Failed to process image: \(url.lastPathComponent)"
-                            ])
-                        }
-                        
-                    default:
-                        if let titlePage = createTitlePage(for: url.lastPathComponent) {
-                            pdfDocument.insert(titlePage, at: pdfDocument.pageCount)
-                            
-                            // For code files, use syntax highlighted version if possible
-                            if let language = languageForFile(url), useSyntaxHighlighting {
-                                if let pages = createSyntaxHighlightedPages(from: url, language: language) {
-                                    for page in pages {
-                                        pdfDocument.insert(page, at: pdfDocument.pageCount)
+                        switch url.pathExtension.lowercased() {
+                        case "pdf":
+                            if let existingPDF = PDFDocument(url: url) {
+                                // Add each page from the existing PDF
+                                for i in 0..<existingPDF.pageCount {
+                                    if let page = existingPDF.page(at: i) {
+                                        contentPages.append(page)
                                     }
-                                } else if let textPage = createPDFPage(from: url) {
-                                    pdfDocument.insert(textPage, at: pdfDocument.pageCount)
-                                } else {
-                                    throw NSError(domain: "FileProcessingError", code: 3, userInfo: [
-                                        NSLocalizedDescriptionKey: "Failed to create PDF pages for: \(url.lastPathComponent)"
-                                    ])
                                 }
-                            } else if let textPage = createPDFPage(from: url) {
-                                pdfDocument.insert(textPage, at: pdfDocument.pageCount)
                             } else {
-                                throw NSError(domain: "FileProcessingError", code: 4, userInfo: [
-                                    NSLocalizedDescriptionKey: "Failed to create PDF page for: \(url.lastPathComponent)"
+                                throw NSError(domain: "PDFProcessingError", code: 1, userInfo: [
+                                    NSLocalizedDescriptionKey: "Failed to read PDF: \(url.lastPathComponent)"
                                 ])
                             }
-                        } else {
-                            throw NSError(domain: "TitlePageError", code: 5, userInfo: [
-                                NSLocalizedDescriptionKey: "Failed to create title page for: \(url.lastPathComponent)"
-                            ])
+                            
+                        case "jpg", "jpeg", "png", "gif", "heic", "tiff", "webp":
+                            if let image = NSImage(contentsOf: url),
+                               let page = self.createPDFPage(from: image) {
+                                contentPages.append(page)
+                            } else {
+                                throw NSError(domain: "ImageProcessingError", code: 2, userInfo: [
+                                    NSLocalizedDescriptionKey: "Failed to process image: \(url.lastPathComponent)"
+                                ])
+                            }
+                            
+                        default:
+                            // For code files, use syntax highlighted version if possible
+                            if let language = self.languageForFile(url), let highlighted = self.createSyntaxHighlightedPages(from: url, language: language) {
+                                contentPages.append(contentsOf: highlighted)
+                            } else if let textPage = self.createPDFPage(from: url) {
+                                contentPages.append(textPage)
+                            } else {
+                                throw NSError(domain: "FileProcessingError", code: 3, userInfo: [
+                                    NSLocalizedDescriptionKey: "Failed to create PDF pages for: \(url.lastPathComponent)"
+                                ])
+                            }
                         }
+                        
+                        // Store the processed pages
+                        resultLock.lock()
+                        processedPages.append((fileIndex: index, titlePage: titlePage, contentPages: contentPages))
+                        
+                        // Update progress
+                        completedFiles += 1
+                        let progress = Double(completedFiles) / totalFiles
+                        DispatchQueue.main.async {
+                            self.progress = progress
+                        }
+                        resultLock.unlock()
+                        
+                    } catch {
+                        logger.error("Error processing file for PDF: \(error.localizedDescription)")
+                        
+                        resultLock.lock()
+                        completedFiles += 1
+                        resultLock.unlock()
                     }
-                    
-                    DispatchQueue.main.async {
-                        self.progress = Double(index + 1) / totalFiles
-                    }
-                } catch {
-                    logger.error("Error processing file for PDF: \(error.localizedDescription)")
                 }
+                group.leave()
+            }
+        }
+        
+        // Wait for all processing to complete
+        group.wait()
+        
+        // Sort results to maintain original file order
+        processedPages.sort { $0.fileIndex < $1.fileIndex }
+        
+        // Combine pages in the correct order
+        for pageSet in processedPages {
+            if let titlePage = pageSet.titlePage {
+                pdfDocument.insert(titlePage, at: pdfDocument.pageCount)
+            }
+            
+            for contentPage in pageSet.contentPages {
+                pdfDocument.insert(contentPage, at: pdfDocument.pageCount)
             }
         }
         
@@ -692,10 +714,6 @@ class FileProcessor: ObservableObject {
         do {
             let content = try String(contentsOf: url, encoding: .utf8)
             
-            guard let highlightedCode = highlighter?.highlight(content, as: language) else {
-                return nil
-            }
-            
             // Add line numbers
             let codeLinesArray = content.components(separatedBy: .newlines)
             let lineNumberAttrString = NSMutableAttributedString()
@@ -714,13 +732,24 @@ class FileProcessor: ObservableObject {
                 }
             }
             
-            // Create combined attributed string with line numbers and code
+            // Create styled code content
+            let style = NSMutableParagraphStyle()
+            style.lineSpacing = 2
+            style.paragraphSpacing = 10
             
-            // Create PDF pages
-            return createPDFPagesFromAttributedCode(highlightedCode, lineNumbers: lineNumberAttrString, fileName: url.lastPathComponent)
+            let codeAttributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: NSColor.black,
+                .paragraphStyle: style
+            ]
+            
+            let codeAttributedString = NSAttributedString(string: content, attributes: codeAttributes)
+            
+            // Create PDF pages with line numbers and code
+            return createPDFPagesFromAttributedCode(codeAttributedString, lineNumbers: lineNumberAttrString, fileName: url.lastPathComponent)
             
         } catch {
-            logger.error("Error creating syntax highlighted pages: \(error.localizedDescription)")
+            logger.error("Error creating formatted pages: \(error.localizedDescription)")
             return nil
         }
     }
@@ -807,28 +836,19 @@ class FileProcessor: ObservableObject {
         do {
             let content = try String(contentsOf: url, encoding: .utf8)
             
-            // Check if we should use syntax highlighting
-            let language = languageForFile(url)
-            let attributedString: NSAttributedString
+            // Create styled attributed string with improved formatting
+            let style = NSMutableParagraphStyle()
+            style.lineSpacing = 2
+            style.paragraphSpacing = 10
             
-            if let language = language, useSyntaxHighlighting, let highlighted = highlighter?.highlight(content, as: language) {
-                // Use syntax highlighted version
-                attributedString = highlighted
-            } else {
-                // Create regular attributed string with improved formatting
-                let style = NSMutableParagraphStyle()
-                style.lineSpacing = 2
-                style.paragraphSpacing = 10
-                
-                let attributes: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
-                    .foregroundColor: NSColor.black,
-                    .paragraphStyle: style,
-                    .backgroundColor: NSColor.clear
-                ]
-                
-                attributedString = NSAttributedString(string: content, attributes: attributes)
-            }
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: NSColor.black,
+                .paragraphStyle: style,
+                .backgroundColor: NSColor.clear
+            ]
+            
+            let attributedString = NSAttributedString(string: content, attributes: attributes)
             
             // Create PDF page
             let pageRect = CGRect(x: 0, y: 0, width: 612, height: 792) // US Letter
@@ -861,13 +881,6 @@ class FileProcessor: ObservableObject {
             
             // Draw header
             let headerRect = CGRect(x: 50, y: pageRect.height - 40, width: pageRect.width - 100, height: 20)
-            
-            // Add line numbers to left margin
-            let lines = content.components(separatedBy: .newlines)
-            var lineNumbersText = ""
-            for i in 1...lines.count {
-                lineNumbersText += "\(i)\n"
-            }
             
             // Create content frame
             let contentRect = CGRect(x: 50, y: 50, width: pageRect.width - 100, height: pageRect.height - 100)

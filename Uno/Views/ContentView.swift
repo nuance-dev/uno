@@ -19,8 +19,8 @@ struct ContentView: View {
     
     var body: some View {
         ZStack {
-            // Frosted glass background
-            VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
+            // Clean background
+            Color(NSColor.windowBackgroundColor)
                 .ignoresSafeArea()
             
             VStack(spacing: 0) {
@@ -32,7 +32,7 @@ struct ContentView: View {
                 
                 mainContent
             }
-            .padding(.vertical, 20)
+            .padding(.vertical, 15)
         }
         .frame(minWidth: 700, minHeight: 700)
         .preferredColorScheme(.dark)
@@ -65,34 +65,13 @@ struct ContentView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 .popover(isPresented: $showSettings, arrowEdge: .top) {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 16) {
                         Text("Settings")
                             .font(.headline)
                             .padding(.bottom, 4)
                         
-                        Group {
-                            // Common settings for both modes
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Display")
-                                    .font(.subheadline)
-                                    .foregroundColor(.secondary)
-                                
-                                Toggle("Syntax Highlighting", isOn: $processor.useSyntaxHighlighting)
-                                    .toggleStyle(SwitchToggleStyle())
-                                    .onChange(of: processor.useSyntaxHighlighting) { oldValue, newValue in
-                                        // Reprocess files to apply syntax highlighting change
-                                        if !processor.files.isEmpty {
-                                            processor.processFiles(mode: mode)
-                                        }
-                                    }
-                            }
-                            
-                            Divider()
-                                .padding(.vertical, 8)
-                        }
-                        
                         if mode == .prompt {
-                            VStack(alignment: .leading, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 12) {
                                 Text("Prompt Format")
                                     .font(.subheadline)
                                     .foregroundColor(.secondary)
@@ -112,6 +91,14 @@ struct ContentView: View {
                                 Toggle("Include File Tree", isOn: $processor.includeFileTree)
                                     .toggleStyle(SwitchToggleStyle())
                                     .onChange(of: processor.includeFileTree) { oldValue, newValue in
+                                        if !processor.files.isEmpty {
+                                            processor.processFiles(mode: mode)
+                                        }
+                                    }
+                                
+                                Toggle("Syntax Highlighting", isOn: $processor.useSyntaxHighlighting)
+                                    .toggleStyle(SwitchToggleStyle())
+                                    .onChange(of: processor.useSyntaxHighlighting) { oldValue, newValue in
                                         if !processor.files.isEmpty {
                                             processor.processFiles(mode: mode)
                                         }
@@ -163,9 +150,9 @@ struct ContentView: View {
     private var mainContent: some View {
         ZStack {
             if processor.files.isEmpty {
-                DropZoneView(isDragging: $isDragging, mode: mode) {
+                DropZoneView(isDragging: $isDragging, mode: mode, onButtonClick: {
                     handleFileSelection()
-                }
+                })
             } else {
                 ProcessedView(processor: processor, mode: mode)
             }

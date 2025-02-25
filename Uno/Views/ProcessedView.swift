@@ -88,6 +88,7 @@ struct ProcessedView: View {
                             )
                         }
                         .buttonStyle(PlainButtonStyle())
+                        .transition(.opacity)
                     } else if mode == .pdf && selectedView == .processed {
                         Button(action: savePDF) {
                             Label("Save PDF", systemImage: "arrow.down.doc")
@@ -101,65 +102,60 @@ struct ProcessedView: View {
                                 )
                         }
                         .buttonStyle(PlainButtonStyle())
-                        .disabled(processor.processedPDF == nil)
+                        .transition(.opacity)
                     }
                     
+                    // Clear button
                     Button(action: { showingClearConfirmation = true }) {
-                        Label("Clear", systemImage: "trash")
-                            .font(.system(size: 13, weight: .medium))
+                        Image(systemName: "xmark.circle")
+                            .font(.system(size: 14))
                             .foregroundColor(.secondary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.secondary.opacity(0.1))
-                            )
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(PlainButtonStyle())
                     .confirmationDialog(
-                        "Clear All Files",
+                        "Clear all files?",
                         isPresented: $showingClearConfirmation,
                         titleVisibility: .visible
                     ) {
-                        Button("Clear All", role: .destructive) {
-                            withAnimation(.spring(response: 0.3)) {
-                                processor.clearFiles()
-                            }
+                        Button("Clear", role: .destructive) {
+                            processor.clearFiles()
                         }
                         Button("Cancel", role: .cancel) {}
                     } message: {
-                        Text("Are you sure you want to clear all files? This action cannot be undone.")
+                        Text("This will remove all loaded files.")
                     }
                 }
             }
-            .padding(.bottom, 12)
+            .padding(.horizontal)
+            .padding(.bottom, 10)
             
-            // Main Content
+            // Main content area
             Group {
                 if selectedView == .files {
-                    fileListView
+                    fileList
                 } else {
                     if mode == .prompt {
-                        promptResultView
+                        promptView
                     } else {
-                        pdfResultView
+                        pdfView
                     }
                 }
             }
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.secondary.opacity(0.05))
+        }
+        .animation(.spring(response: 0.3), value: selectedView)
+        .alert(isPresented: $showError) {
+            Alert(
+                title: Text("Error"),
+                message: Text(errorMessage),
+                dismissButton: .default(Text("OK"))
             )
-            
-            if let error = processor.error {
-                ErrorBanner(message: error)
-                    .padding(.top, 12)
-            }
         }
     }
     
     // File list view showing tree structure
-    var fileListView: some View {
+    var fileList: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Files")
                 .font(.headline)
@@ -191,7 +187,7 @@ struct ProcessedView: View {
     }
     
     // Prompt result view
-    var promptResultView: some View {
+    var promptView: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Prompt Output")
                 .font(.headline)
@@ -219,7 +215,7 @@ struct ProcessedView: View {
     }
     
     // PDF result view
-    var pdfResultView: some View {
+    var pdfView: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("PDF Preview")
@@ -317,11 +313,12 @@ struct ProcessedView: View {
                         }
                     }
                 } else {
-                    throw NSError(
+                    let error = NSError(
                         domain: "PDFError",
                         code: -1,
                         userInfo: [NSLocalizedDescriptionKey: "No PDF document available"]
                     )
+                    throw error
                 }
             } catch {
                 DispatchQueue.main.async {

@@ -10,13 +10,17 @@ let package = Package(
         .library(
             name: "Uno",
             targets: ["Uno"]),
+        .executable(
+            name: "UnoApp",
+            targets: ["Uno"])
     ],
     dependencies: [
-        .package(url: "https://github.com/raspu/Highlightr.git", from: "2.1.2"),
+        // Removed highlightr dependency
     ],
     targets: [
         .target(
             name: "Uno",
-            dependencies: ["Highlightr"]),
+            dependencies: [], // Removed highlightr dependency
+            path: "Uno") // Added path to correct source directory
     ]
 ) 

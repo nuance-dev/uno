@@ -7,81 +7,63 @@ struct LoaderView: View {
     
     var body: some View {
         ZStack {
-            // Backdrop blur
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .opacity(0.95)
+            // Backdrop
+            Color.black.opacity(0.3)
                 .ignoresSafeArea()
             
             // Modern loader container
-            VStack(spacing: 24) {
+            VStack(spacing: 20) {
                 // Animated loader
                 ZStack {
                     // Track circle
                     Circle()
-                        .stroke(Color.secondary.opacity(0.15), lineWidth: 6)
-                        .frame(width: 64, height: 64)
+                        .stroke(Color.white.opacity(0.2), lineWidth: 3)
+                        .frame(width: 52, height: 52)
                     
-                    // Progress circle with gradient
+                    // Progress circle
                     Circle()
                         .trim(from: 0, to: progress)
                         .stroke(
-                            LinearGradient(
-                                gradient: Gradient(colors: [Color.accentColor, Color.accentColor.opacity(0.8)]),
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
+                            Color.accentColor,
                             style: StrokeStyle(
-                                lineWidth: 6,
+                                lineWidth: 3,
                                 lineCap: .round
                             )
                         )
-                        .frame(width: 64, height: 64)
+                        .frame(width: 52, height: 52)
                         .rotationEffect(.degrees(-90))
-                        .animation(.easeInOut, value: progress)
+                        .animation(.easeInOut(duration: 0.3), value: progress)
                     
                     // Percentage text
                     Text("\(Int(progress * 100))%")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.primary)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white)
                         .opacity(showingIndeterminate ? 0 : 1)
                     
                     // Indeterminate spinner for initial load
                     Circle()
-                        .trim(from: 0, to: 0.7)
+                        .trim(from: 0, to: 0.75)
                         .stroke(
-                            LinearGradient(
-                                gradient: Gradient(colors: [Color.accentColor, Color.accentColor.opacity(0.5)]),
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
+                            Color.accentColor,
                             style: StrokeStyle(
-                                lineWidth: 6,
+                                lineWidth: 3,
                                 lineCap: .round
                             )
                         )
-                        .frame(width: 64, height: 64)
+                        .frame(width: 52, height: 52)
                         .rotationEffect(.degrees(rotation))
                         .opacity(showingIndeterminate ? 1 : 0)
                 }
                 
-                VStack(spacing: 8) {
-                    Text("Processing Files")
-                        .font(.system(size: 16, weight: .semibold))
-                    
-                    Text("Creating your \(progress < 0.5 ? "content" : "output")")
-                        .font(.system(size: 14))
-                        .foregroundColor(.secondary)
-                }
+                Text("Processing Files")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(.white)
             }
-            .padding(36)
+            .padding(24)
             .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Color(NSColor.windowBackgroundColor).opacity(0.6))
-                    .background(
-                        VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
-                    )
-                    .shadow(color: .black.opacity(0.12), radius: 20, x: 0, y: 10)
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.black.opacity(0.75))
+                    .shadow(color: .black.opacity(0.1), radius: 10, x: 0, y: 5)
             )
         }
         .onAppear {
