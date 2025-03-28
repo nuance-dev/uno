@@ -2,6 +2,7 @@ import SwiftUI
 import PDFKit
 import UniformTypeIdentifiers
 import os
+import Combine // For debouncing settings changes
 
 @MainActor // Ensure UI updates are on the main thread
 class AppViewModel: ObservableObject {
@@ -14,16 +15,24 @@ class AppViewModel: ObservableObject {
         var id: String { self.rawValue }
     }
 
+    enum ViewState {
+        case empty
+        case filesPresent
+    }
+    
+    // Refined Processing State
     enum ProcessingState: Equatable {
         case idle
-        case scanning(String) // Indicate which folder is being scanned
+        case scanning(String)
+        case preparing // Short state before processing starts
         case processing(Double, String) // Progress (0-1) and current step description
-        case error(String)
+        case cancelling
+        case error(String) // Critical error summary
         case success(String) // Optional success message
         
         var isProcessing: Bool {
             switch self {
-            case .scanning, .processing:
+            case .scanning, .processing, .preparing, .cancelling:
                 return true
             default:
                 return false
@@ -31,12 +40,7 @@ class AppViewModel: ObservableObject {
         }
     }
     
-    enum ViewState {
-        case empty
-        case filesPresent
-    }
-    
-    struct SkippedItemInfo: Identifiable {
+    struct SkippedItemInfo: Identifiable, Hashable {
         let id = UUID()
         let name: String
         let reason: String
@@ -47,27 +51,33 @@ class AppViewModel: ObservableObject {
     @Published var fileTree: [FileItem] = []
     @Published var currentMode: Mode = .prompt {
         didSet {
-            if oldValue != currentMode && !fileTree.isEmpty {
-                Task { await processFiles() }
+            if oldValue != currentMode {
+                Self.logger.info("Mode changed to \(self.currentMode.rawValue). Triggering reprocess.")
+                // Don't clear files, just reprocess
+                triggerProcessing()
             }
         }
     }
-    @Published var processingState: ProcessingState = .idle
-    @Published var criticalErrors: [String] = [] // Serious errors only
-    @Published var viewState: ViewState = .empty
-    @Published var skippedFilesInfo: [SkippedItemInfo] = []
+    @Published private(set) var viewState: ViewState = .empty
+    @Published private(set) var processingState: ProcessingState = .idle
+    @Published private(set) var criticalErrors: [String] = [] // Only critical errors
 
     // Prompt Mode Specific
-    @Published var generatedPrompt: String = ""
-    @Published var promptMaxSizeMB: Double = 1.0 // Max size in MB for full inclusion
+    @Published var promptChunks: [String] = [] // *** For progressive loading ***
+    @Published var generatedPrompt: String = "" // Keep final combined prompt if needed elsewhere
+    @Published var promptMaxSizeMB: Double = 1.0
     @Published var includeTreeInPrompt: Bool = false
 
     // PDF Mode Specific
     @Published var generatedPDF: PDFDocument?
+    @Published var skippedFilesInfo: [SkippedItemInfo] = [] // Info for PDF mode
 
-    // MARK: - Constants & Logger -
+    // MARK: - Private Properties -
     private static let logger = Logger(subsystem: "me.nuanc.Uno", category: "AppViewModel")
-    private let maxFileSizeForPromptNote: Int64 = 500 * 1024 * 1024 // 500MB absolute max to even *try* reading
+    private let maxFileSizeForPromptNote: Int64 = 500 * 1024 * 1024
+    private var fileBookmarks: [URL: Data] = [:] // Store bookmarks keyed by original URL
+    private var processingTask: Task<Void, Never>? = nil // To manage the main processing task
+    private var settingsDebounceTimer: AnyCancellable?
 
     // MARK: - Computed Properties -
     
@@ -76,82 +86,166 @@ class AppViewModel: ObservableObject {
         flattenTree(items: fileTree)
     }
 
-    // MARK: - File Handling -
+    // MARK: - Initialization & Setup -
+    init() {
+        // Example: Debounce settings changes to avoid excessive reprocessing
+        setupSettingsDebouncer()
+
+        // Defer initial update check or make it manual
+        // Task { await UpdateChecker.shared.checkForUpdates() } // Or use a shared instance
+    }
+
+    private func setupSettingsDebouncer() {
+         // Combine pipeline to debounce promptMaxSizeMB and includeTreeInPrompt changes
+         settingsDebounceTimer = Publishers.CombineLatest(
+             $promptMaxSizeMB.debounce(for: .milliseconds(750), scheduler: RunLoop.main),
+             $includeTreeInPrompt.debounce(for: .milliseconds(750), scheduler: RunLoop.main)
+         )
+         .sink { [weak self] _, _ in
+             guard let self = self, self.viewState == .filesPresent else { return }
+             Self.logger.debug("Settings debounced. Triggering reprocess.")
+             self.triggerProcessing()
+         }
+     }
+
+    // MARK: - File Handling (Robust Bookmarks & State) -
 
     func addUrls(_ urls: [URL]) {
-        // Check if we can proceed with adding URLs
-        if case .scanning = processingState { return }
-        if case .processing = processingState { return }
-        
-        fileTree.removeAll() // Clear existing files before adding new ones
-        viewState = .empty // Reset view state
-        criticalErrors.removeAll()
-        processingState = .scanning("Selected items...")
+        guard processingState == .idle || processingState == .success("") || processingState == .error("") else {
+            Self.logger.warning("Ignoring add request while busy (\(String(describing: self.processingState)))")
+            return
+        }
+
+        // Reset state before starting scan
+        clearAll(keepFiles: false) // Clear previous results and errors
+        processingState = .scanning("Preparing...")
+        viewState = .empty // Show scanning progress over empty state initially if preferred
 
         Task { // Perform scanning asynchronously
             var newRootItems: [FileItem] = []
+            var collectedBookmarks: [URL: Data] = [:] // Collect new bookmarks during scan
+
             for url in urls {
-                if let item = await createFileItem(from: url) {
+                 processingState = .scanning(url.lastPathComponent) // Update status
+                 // Create bookmark IMMEDIATELY for dropped URLs if they don't have one
+                 if fileBookmarks[url] == nil {
+                     do {
+                         let bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+                         collectedBookmarks[url] = bookmarkData // Store the new bookmark
+                         Self.logger.debug("Created security bookmark for added URL: \(url.lastPathComponent)")
+                     } catch {
+                         Self.logger.error("Failed to create bookmark for \(url.lastPathComponent): \(error.localizedDescription). File may be inaccessible.")
+                         criticalErrors.append("Permission Error: Cannot secure access for \(url.lastPathComponent).")
+                         // Decide: Skip this URL entirely or try accessing without bookmark? Skipping is safer for Sandbox.
+                         continue // Skip this URL
+                     }
+                 }
+
+                 // Now scan using the URL (bookmark resolution will happen inside createFileItem)
+                 if let item = await createFileItem(from: url, collectedBookmarks: &collectedBookmarks) {
                     newRootItems.append(item)
+                }
+                // Check if cancelled
+                 guard processingState != .cancelling else {
+                    Self.logger.info("Scanning cancelled.")
+                    clearAll()
+                    return
                 }
             }
 
-            // Add new items to the tree
-            fileTree = newRootItems
-            
-            // Sort the root tree alphabetically
-            fileTree.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            // --- State Transition FIX ---
+             // If cancelled during loop, state is already handled. Otherwise...
+             if processingState != .cancelling {
+                 // Update the main bookmark dictionary
+                 self.fileBookmarks.merge(collectedBookmarks) { (_, new) in new }
 
-            if fileTree.isEmpty {
-                processingState = .idle
-                viewState = .empty
-            } else {
-                viewState = .filesPresent
-                await processFiles()
-            }
+                 // Merge new items (ensure no duplicates based on URL)
+                 var currentUrls = Set(self.fileTree.map { $0.url })
+                 for newItem in newRootItems {
+                      if !currentUrls.contains(newItem.url) {
+                          self.fileTree.append(newItem)
+                          currentUrls.insert(newItem.url)
+                      }
+                 }
+                 self.fileTree.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+
+                 if !self.fileTree.isEmpty {
+                     self.viewState = .filesPresent
+                     Self.logger.info("Scanning complete. Found \(self.fileTree.count) root items. Triggering processing.")
+                     self.processingState = .preparing // Move to preparing state
+                     triggerProcessing() // Automatically process after adding
+                 } else {
+                     Self.logger.warning("Scanning complete. No valid items found.")
+                     // If critical errors occurred during scanning, show them
+                     self.processingState = criticalErrors.isEmpty ? .idle : .error("Scanning failed for some items.")
+                     self.viewState = .empty // Remain in empty state
+                 }
+             }
         }
     }
 
-    private func createFileItem(from url: URL, isRoot: Bool = true) async -> FileItem? {
-        // Basic security check / bookmark resolution might be needed here for sandbox
-        // Assuming direct access for now
+    // Modified to handle bookmark creation/passing during scan
+    private func createFileItem(from url: URL, collectedBookmarks: inout [URL: Data], isRoot: Bool = true) async -> FileItem? {
+        // 1. Ensure we have bookmark data for this URL before proceeding
+         var bookmarkData = fileBookmarks[url] ?? collectedBookmarks[url]
+         if bookmarkData == nil && !isRoot { // If child URL has no bookmark yet, try to create it
+              do {
+                  // Need access to parent first? This gets complex.
+                  // Safer: Assume parent directory access grants child access temporarily,
+                  // OR require explicit bookmark creation for children if needed (more robust).
+                  // Let's try creating bookmark directly for child:
+                  bookmarkData = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+                  collectedBookmarks[url] = bookmarkData // Store it
+                  Self.logger.debug("Created bookmark for child \(url.lastPathComponent) during scan.")
+              } catch {
+                   Self.logger.warning("Could not create bookmark for child \(url.lastPathComponent): \(error.localizedDescription). Skipping.")
+                   criticalErrors.append("Permission Error: Cannot secure \(url.lastPathComponent)")
+                   return nil
+              }
+         }
+
+         // 2. Access the URL securely using the bookmark
+         guard let currentBookmarkData = bookmarkData,
+               let (scopedURL, accessStarted) = await secureAccess(bookmarkData: currentBookmarkData) else {
+             Self.logger.error("Failed to secure access for \(url.lastPathComponent) during scan.")
+             // Don't add to criticalErrors here, secureAccess already does
+             return nil
+         }
+         defer { if accessStarted { scopedURL.stopAccessingSecurityScopedResource() } }
+
+        // 3. Get resource values using the SCOPED URL
         do {
-            let resourceValues = try url.resourceValues(forKeys: [.nameKey, .isDirectoryKey, .contentTypeKey, .fileSizeKey])
-            let name = resourceValues.name ?? url.lastPathComponent
+            let resourceValues = try scopedURL.resourceValues(forKeys: [.nameKey, .isDirectoryKey, .contentTypeKey, .fileSizeKey])
+            let name = resourceValues.name ?? scopedURL.lastPathComponent
             let type = resourceValues.contentType
-            let size = resourceValues.fileSize.map { Int64($0) } // Size in bytes
+            let size = resourceValues.fileSize.map { Int64($0) }
 
             if resourceValues.isDirectory == true {
-                // It's a directory, scan its contents
-                processingState = .scanning(url.lastPathComponent) // Update status
                 var children: [FileItem] = []
-                let enumerator = FileManager.default.enumerator(at: url,
+                // Use FileManager enumerator on the SCOPED URL
+                let enumerator = FileManager.default.enumerator(at: scopedURL,
                                                                includingPropertiesForKeys: [.nameKey, .isDirectoryKey, .contentTypeKey, .fileSizeKey],
                                                                options: [.skipsHiddenFiles, .skipsPackageDescendants])
 
                 if let fileEnumerator = enumerator {
                     for case let fileURL as URL in fileEnumerator {
-                         // Recursively create items for children, marking them as not root
-                         // Stop scanning if state changes away from scanning
-                        guard case .scanning = processingState else {
-                            Self.logger.info("Scanning cancelled.")
-                            return nil // Abort if state changed
-                        }
-                        if let childItem = await createFileItem(from: fileURL, isRoot: false) {
+                        // Check for cancellation
+                         guard processingState != .cancelling else { return nil }
+                        // Recursively create items for children
+                        if let childItem = await createFileItem(from: fileURL, collectedBookmarks: &collectedBookmarks, isRoot: false) {
                             children.append(childItem)
                         }
                     }
                 }
-                // Sort children alphabetically
-                 children.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-                return FileItem(url: url, name: name, type: type, size: size, children: children, isExpanded: isRoot) // Expand root folders initially
+                children.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                 // Use original URL for the FileItem ID/key, but store scoped info if needed? No, use original.
+                 return FileItem(url: url, name: name, type: type, size: size, children: children, isExpanded: isRoot)
             } else {
-                // It's a file
-                return FileItem(url: url, name: name, type: type, size: size, children: nil)
+                 return FileItem(url: url, name: name, type: type, size: size, children: nil)
             }
         } catch {
-            Self.logger.error("Error accessing file attributes for \(url.path): \(error.localizedDescription)")
-            criticalErrors.append("Error accessing: \(url.lastPathComponent)")
+            Self.logger.error("Error reading attributes for scoped \(scopedURL.lastPathComponent): \(error.localizedDescription)")
+            criticalErrors.append("Error Reading: \(scopedURL.lastPathComponent)")
             return nil
         }
     }
@@ -166,377 +260,352 @@ class AppViewModel: ObservableObject {
                   clearAll()
               } else {
                    // Re-process after removal
-                   Task { await processFiles() }
+                   Task { await triggerProcessing() }
               }
          } else {
              Self.logger.warning("Could not find root item with ID \(id.uuidString) to remove.")
          }
      }
 
-     func clearAll() {
-         Self.logger.info("Clearing all files and results.")
-         fileTree.removeAll()
+     func clearAll(keepFiles: Bool = false) {
+         Self.logger.info("Clearing results. Keep files: \(keepFiles)")
+         cancelProcessing() // Cancel any ongoing task
+         promptChunks = []
          generatedPrompt = ""
          generatedPDF = nil
-         criticalErrors.removeAll()
-         skippedFilesInfo.removeAll()
+         criticalErrors = []
+         skippedFilesInfo = []
+         if !keepFiles {
+             fileTree = []
+             fileBookmarks = [:]
+             viewState = .empty
+         }
          processingState = .idle
-         viewState = .empty
      }
 
     // MARK: - Processing Logic -
 
-    func processFiles() async {
-         guard !fileTree.isEmpty else {
-             Self.logger.info("No files in tree to process.")
-             clearAll() // Ensure clean state
-             return
-         }
+    private func generatePrompt(selectedItems: [FileItem]) async {
+        let maxSizeBytes = Int64(promptMaxSizeMB * 1024 * 1024)
+        var currentChunks: [String] = [] // Build locally first
 
-        // Check if we can proceed with processing
-        if case .scanning = processingState { 
-            Self.logger.warning("Ignoring process request while busy (scanning)")
-            return 
+        // 1. Optionally add tree structure
+        if includeTreeInPrompt {
+             // Check for cancellation before starting
+            guard processingState != .cancelling else { return }
+            processingState = .processing(0, "Generating file tree...")
+            var treeString = "```text\n"
+            treeString += generateTreeString(items: fileTree) // Use full tree
+            treeString += "```\n\n"
+            currentChunks.append(treeString)
+            // Update immediately
+             await MainActor.run { self.promptChunks = currentChunks }
         }
-        if case .processing = processingState { 
-            Self.logger.warning("Ignoring process request while busy (processing)")
-            return
-        }
 
-         processingState = .processing(0, "Starting...")
-         criticalErrors.removeAll()
-         skippedFilesInfo.removeAll()
-         generatedPrompt = ""
-         generatedPDF = nil
+        // 2. Process each selected file
+        for (index, item) in selectedItems.enumerated() {
+            // Check for cancellation *before* processing each item
+             guard processingState != .cancelling else { return }
 
-         // Flatten the tree to get a list of selected files to process
-         let selectedItems = flattenTree(items: fileTree).filter { $0.isSelected && !$0.isDirectory }
-         let totalFilesToProcess = selectedItems.count
-         guard totalFilesToProcess > 0 else {
-             Self.logger.info("No files selected for processing.")
-             processingState = .idle 
-             return
-         }
+            let progress = Double(index + 1) / Double(selectedItems.count)
+            processingState = .processing(progress, item.name) // Update status *before* potential async work
 
-         Self.logger.info("Processing \(totalFilesToProcess) selected files for mode: \(self.currentMode.rawValue)")
+            var chunkToAdd = ""
 
-         do {
-             switch currentMode {
-             case .prompt:
-                 await generatePrompt(selectedItems: selectedItems)
-             case .pdf:
-                 await generatePDF(selectedItems: selectedItems)
-             }
+            guard let fileSize = item.size else {
+                chunkToAdd = "[Skipped: \(item.name) - Unknown Size]\n\n"
+                Self.logger.warning("Skipping \(item.name): Unknown size")
+                // Maybe add to skippedFilesInfo even for prompt mode? Or just inline note.
+                skippedFilesInfo.append(.init(name: item.name, reason: "Unknown file size"))
+                currentChunks.append(chunkToAdd)
+                await MainActor.run { self.promptChunks = currentChunks } // Update UI
+                continue // Move to next item
+            }
 
-             if criticalErrors.isEmpty {
-                 processingState = .success("Processing complete.")
-                 Self.logger.info("Processing finished successfully.")
-             } else {
-                 processingState = .error("Processing completed with errors.")
-                 Self.logger.warning("Processing finished with \(self.criticalErrors.count) errors.")
-             }
+            guard fileSize <= maxFileSizeForPromptNote else {
+                chunkToAdd = "[Skipped: \(item.name) - File Exceeds Max Limit (\(ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)))]\n\n"
+                Self.logger.warning("Skipping \(item.name): Exceeds absolute limit")
+                skippedFilesInfo.append(.init(name: item.name, reason: "File too large (\(ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)))"))
+                currentChunks.append(chunkToAdd)
+                await MainActor.run { self.promptChunks = currentChunks }
+                continue
+            }
 
-         } catch is CancellationError {
-             Self.logger.info("Processing cancelled.")
-             processingState = .idle
-         } catch {
-             Self.logger.error("Unexpected error during processing: \(error.localizedDescription)")
-             criticalErrors.append("An unexpected error occurred.")
-             processingState = .error("Processing failed.")
-         }
-     }
-
-     // MARK: - Prompt Generation -
-
-     private func generatePrompt(selectedItems: [FileItem]) async {
-         var promptOutput = ""
-         let maxSizeBytes = Int64(promptMaxSizeMB * 1024 * 1024)
-
-         // 1. Optionally add tree structure
-         if includeTreeInPrompt {
-             processingState = .processing(0, "Generating file tree...")
-             promptOutput += "```text\n" // Use code block for structure
-             promptOutput += generateTreeString(items: fileTree) // Generate from the full tree
-             promptOutput += "```\n\n"
-         }
-
-         // 2. Process each selected file
-         for (index, item) in selectedItems.enumerated() {
-             // Check for cancellation
-              guard case .processing = processingState else { return }
-
-             let progress = Double(index + 1) / Double(selectedItems.count)
-             processingState = .processing(progress, "Processing: \(item.name)")
-
-             guard let fileSize = item.size else {
-                 Self.logger.warning("Skipping file with unknown size: \(item.name)")
-                 promptOutput += "[Note: \(item.name) - Unknown size]\n\n"
-                 continue
-             }
-
-             // Check absolute max size
-             guard fileSize <= maxFileSizeForPromptNote else {
-                 Self.logger.warning("Skipping file larger than absolute max (\(fileSize / 1024 / 1024)MB): \(item.name)")
-                 promptOutput += "[Skipped: \(item.name) - File exceeds maximum size limit of 500MB]\n\n"
-                 continue
-             }
-
-             // Apply configurable size threshold
-             if fileSize <= maxSizeBytes {
-                 // Include full content
-                 if let content = await readFileContent(item.url, item.type) {
-                     promptOutput += "<\(item.name)>\n"
-                     promptOutput += content
-                     promptOutput += "\n</\(item.name)>\n\n"
+            if fileSize <= maxSizeBytes {
+                 if let content = await readFileContent(item) { // Pass full item
+                     chunkToAdd = "<\(item.name)>\n\(content)\n</\(item.name)>\n\n"
                  } else {
-                     // Error reading file
-                     promptOutput += "[Error: \(item.name) - Could not read file content]\n\n"
+                     // readFileContent logs critical errors and adds to criticalErrors
+                     // Add an inline note indicating the failure for context
+                     chunkToAdd = "[Skipped: \(item.name) - Error Reading File]\n\n"
+                     skippedFilesInfo.append(.init(name: item.name, reason: "Error reading content"))
                  }
-             } else {
-                 // Note the file instead of including content
-                  Self.logger.info("File \(item.name) (\(fileSize / 1024 / 1024)MB) exceeds \(self.promptMaxSizeMB)MB threshold. Noting instead of including.")
-                  promptOutput += "[Note: \(item.name) - Size \(ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)) exceeds inclusion threshold of \(promptMaxSizeMB)MB]\n\n"
-             }
+            } else {
+                chunkToAdd = "[Note: \(item.name) - Exceeds \(String(format: "%.1f", promptMaxSizeMB)) MB Size Limit (\(ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)))]\n\n"
+                Self.logger.info("\(item.name) exceeds threshold, noting instead of including.")
+                skippedFilesInfo.append(.init(name: item.name, reason: "Exceeds size limit (\(ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file)))"))
+            }
+
+            currentChunks.append(chunkToAdd)
+             // Update the published chunks progressively
+             await MainActor.run { self.promptChunks = currentChunks }
+
+             // Optional small delay to allow UI updates if processing is very fast
+             // try? await Task.sleep(nanoseconds: 10_000_000) // 10ms
+        }
+
+         // Combine final prompt *after* loop completes
+         await MainActor.run {
+             self.generatedPrompt = self.promptChunks.joined()
          }
+    }
 
-         generatedPrompt = promptOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-     }
+     // Modified to take FileItem, uses secureAccess helper
+     private func readFileContent(_ item: FileItem) async -> String? {
+         guard let (scopedURL, accessStarted) = await secureAccess(for: item.url) else {
+             // Error logged by secureAccess
+             return nil
+         }
+         defer { if accessStarted { scopedURL.stopAccessingSecurityScopedResource() } }
 
-     private func readFileContent(_ url: URL, _ type: UTType?) async -> String? {
-         // TODO: Add security scope handling if sandboxed
+         let url = scopedURL // Use the securely accessed URL
+         let type = item.type
+
          do {
-             if type?.conforms(to: .pdf) == true {
-                 // Use non-main thread for potentially blocking PDF parsing
-                 return await Task.detached {
-                     guard let pdf = PDFDocument(url: url) else {
-                         // Use a synchronous approach instead of MainActor
-                         DispatchQueue.main.async {
-                             Self.logger.warning("Could not open PDF: \(url.lastPathComponent)")
-                             self.criticalErrors.append("Cannot read PDF: \(url.lastPathComponent)")
-                         }
-                         return nil
-                     }
-                     return pdf.string // Warning: can be memory intensive
-                 }.value
-             } else if type?.conforms(to: .text) == true || type?.conforms(to: .sourceCode) == true || type?.conforms(to: .data) == true {
-                 // For text, source code, or even generic data, try reading as text
-                 // Use non-main thread for file I/O
-                 return await Task.detached {
-                     do {
-                         // Attempt UTF-8 first
-                         if let content = try? String(contentsOf: url, encoding: .utf8) {
-                             return content
-                         }
-                         // Fallback: Detect encoding (basic)
-                         let data = try Data(contentsOf: url)
-                         var detectedEncoding: String.Encoding = .utf8
-                         
-                         // Use a synchronous encoding detection approach
-                         var nsString: NSString?
-                         let detected = NSString.stringEncoding(for: data, encodingOptions: nil, convertedString: &nsString, usedLossyConversion: nil)
-                         if detected != 0 {
-                             detectedEncoding = String.Encoding(rawValue: detected)
-                         }
-                         
-                         let content = String(data: data, encoding: detectedEncoding)
-                         if content == nil {
-                             // Use a synchronous approach instead of MainActor
-                             DispatchQueue.main.async {
-                                  Self.logger.warning("Could not decode file as text: \(url.lastPathComponent)")
-                                  self.criticalErrors.append("Cannot decode as text: \(url.lastPathComponent)")
-                             }
-                         }
-                         return content
-                     } catch {
-                         // Use a synchronous approach instead of MainActor
-                         DispatchQueue.main.async {
-                              Self.logger.error("Error reading file content \(url.lastPathComponent): \(error.localizedDescription)")
-                              self.criticalErrors.append("Error reading: \(url.lastPathComponent)")
-                         }
-                         return nil
-                     }
-                 }.value
-             } else {
-                 Self.logger.warning("Unsupported file type for prompt content: \(url.lastPathComponent) (\(type?.description ?? "Unknown"))")
-                 criticalErrors.append("Unsupported type for prompt: \(url.lastPathComponent)")
-                 // Throw an error to make the catch block reachable
-                 throw NSError(domain: "UnoErrorDomain", code: 1, userInfo: [NSLocalizedDescriptionKey: "Unsupported file type"])
-             }
+             // Run blocking I/O on detached task
+             return try await Task.detached {
+                 if type?.conforms(to: .pdf) == true {
+                     guard let pdf = PDFDocument(url: url) else { throw ReadError.pdfOpenFailed }
+                     guard let content = pdf.string else { throw ReadError.pdfContentExtractionFailed }
+                     return content // Warning: memory intensive
+                 } else if type?.conforms(to: .text) == true || type?.conforms(to: .sourceCode) == true || type?.conforms(to: .data) == true {
+                     // Try common encodings
+                     if let content = try? String(contentsOf: url, encoding: .utf8) { return content }
+                     let data = try Data(contentsOf: url)
+                     var fallback: String.Encoding = .utf8
+                     if let content = String(data: data, encoding: await Self.detectEncoding(data: data, fallback: &fallback)) { return content }
+                     throw ReadError.decodingFailed
+                 } else {
+                     throw ReadError.unsupportedType
+                 }
+             }.value
          } catch {
-             // This catch block is now reachable
+             // Log specific error and add to criticalErrors on MainActor
+             await MainActor.run {
+                 let errorReason: String
+                 switch error {
+                 case ReadError.pdfOpenFailed, is ReadError where error as? ReadError == .pdfOpenFailed:
+                     errorReason = "Cannot open source PDF"
+                 case ReadError.decodingFailed, is ReadError where error as? ReadError == .decodingFailed:
+                     errorReason = "Cannot decode content"
+                 case ReadError.unsupportedType, is ReadError where error as? ReadError == .unsupportedType:
+                     errorReason = "Unsupported type for PDF"
+                 default: 
+                     errorReason = "Error reading content (\(error.localizedDescription))"
+                 }
+                 Self.logger.error("Failed to read content for \(item.name): \(errorReason)")
+                 self.criticalErrors.append("Read Error (\(item.name)): \(errorReason)")
+             }
              return nil
          }
      }
+     // Define ReadError enum inside ViewModel or globally
+     enum ReadError: Error { case pdfOpenFailed, pdfContentExtractionFailed, decodingFailed, unsupportedType }
 
-     // MARK: - PDF Generation -
+    // MARK: - PDF Generation (Robust Access & Skips) -
 
-     private func generatePDF(selectedItems: [FileItem]) async {
-         let document = PDFDocument()
-         skippedFilesInfo.removeAll()
-         
-         for (index, item) in selectedItems.enumerated() {
-             // Check for cancellation
-              guard case .processing = processingState else { return }
-
-             let progress = Double(index + 1) / Double(selectedItems.count)
-             processingState = .processing(progress, "Adding: \(item.name)")
-
-             // TODO: Add security scope handling if sandboxed
-              if let pages = await createPdfPagesForItem(item) {
-                  for page in pages {
-                      document.insert(page, at: document.pageCount)
-                  }
-              } else {
-                  // Item was skipped, add to skip list
-                  skippedFilesInfo.append(SkippedItemInfo(
-                    name: item.name,
-                    reason: "Could not convert to PDF format"
-                  ))
-              }
-         }
-
-         if document.pageCount > 0 {
-             generatedPDF = document
-         } else {
-             if skippedFilesInfo.isEmpty && !selectedItems.isEmpty {
-                 criticalErrors.append("No valid pages could be generated from selected files.")
-             }
-             generatedPDF = nil // Ensure it's nil if no pages added
-         }
-     }
-
-    private func createPdfPagesForItem(_ item: FileItem) async -> [PDFPage]? {
-        guard let type = item.type else {
-            Self.logger.warning("Skipping PDF generation for unknown type: \(item.name)")
-            criticalErrors.append("Unknown type for PDF: \(item.name)")
-            return nil
+    @MainActor
+    private func generatePDF(selectedItems: [FileItem]) async {
+        guard !selectedItems.isEmpty else {
+            Self.logger.debug("No items to generate PDF for.")
+            processingState = .idle
+            return
         }
-
-        // Use Task.detached for blocking operations
-        return await Task.detached {
-            var generatedPages: [PDFPage] = []
-
-            let url = item.url // Assuming URL is accessible
+        
+        let document = PDFDocument()
+        
+        // Skip logic
+        skippedFilesInfo = []
+        
+        for (index, item) in selectedItems.enumerated() {
+            guard processingState != .cancelling else { return }
             
-            // Handle PDFs first (synchronous)
-            if type.conforms(to: .pdf) {
-                autoreleasepool {
-                    if let sourceDoc = PDFDocument(url: url) {
-                        for i in 0..<sourceDoc.pageCount {
-                            if let page = sourceDoc.page(at: i)?.copy() as? PDFPage { // Important to COPY pages
-                                generatedPages.append(page)
-                            }
-                        }
-                    } else {
-                        DispatchQueue.main.async {
-                            Self.logger.warning("Failed to load source PDF: \(item.name)")
-                            self.criticalErrors.append("Cannot load source PDF: \(item.name)")
-                        }
-                    }
-                }
+            let progress = Double(index) / Double(selectedItems.count)
+            let step = "Processing \(item.name) (\(index + 1)/\(selectedItems.count))"
+            processingState = .processing(progress, step)
+            
+            Self.logger.debug("Processing file for PDF: \(item.name)")
+            
+            // Security-scoped URL access wrapper
+            var scopedURL: URL
+            let accessStarted: Bool
+            
+            do {
+                (scopedURL, accessStarted) = try await secureAccess(for: item.url) ?? (item.url, false)
+            } catch {
+                Self.logger.error("Access error for \(item.name): \(error.localizedDescription)")
+                criticalErrors.append("Cannot access file: \(item.name)")
+                skippedFilesInfo.append(.init(name: item.name, reason: "Access error"))
+                continue
             }
-            // Handle images (requires Main thread for PDF creation)
-            else if type.conforms(to: .image) {
-                if let image = NSImage(contentsOf: url) {
-                    // Create a Task to handle the PDF creation
-                    var pageData: Data? = nil
-                    
-                    // Use Task rather than semaphore
-                    await MainActor.run {
-                        pageData = self.createPDFPageDataFromImage(image: image, title: item.name)
-                    }
-                    
-                    if let realPageData = pageData,
-                       let pdfDocument = PDFDocument(data: realPageData),
-                       let page = pdfDocument.page(at: 0)?.copy() as? PDFPage {
-                        generatedPages.append(page)
-                    } else {
-                        DispatchQueue.main.async {
-                            Self.logger.warning("Failed to create PDF page from image: \(item.name)")
-                            self.criticalErrors.append("Cannot convert image: \(item.name)")
-                        }
-                    }
-                } else {
-                    DispatchQueue.main.async {
-                        Self.logger.warning("Failed to load image: \(item.name)")
-                        self.criticalErrors.append("Cannot load image: \(item.name)")
-                    }
-                }
-            }
-            // Handle text content (requires async reading)
-            else if type.conforms(to: .text) || type.conforms(to: .sourceCode) || type.conforms(to: .data) {
-                // Create a future for reading the content
-                let contentFuture = Task<String?, Error> { 
-                    return await self.readFileContent(url, type) 
+            
+            // PDF processing logic
+            do {
+                // Allow time for cancellation check & UI update
+                try await Task.sleep(nanoseconds: 10_000_000) // 10ms delay
+                guard processingState != .cancelling else { return }
+                
+                // Validate each item has valid type/access
+                guard let _ = try? scopedURL.resourceValues(forKeys: [.contentTypeKey]).contentType else {
+                    Self.logger.error("Cannot determine type for \(item.name)")
+                    if accessStarted { scopedURL.stopAccessingSecurityScopedResource() }
+                    skippedFilesInfo.append(.init(name: item.name, reason: "Cannot determine file type"))
+                    continue
                 }
                 
-                do {
-                    // Await content reading (outside autoreleasepool)
-                    let content = try await contentFuture.value
+                // Perform PDF page creation off main thread
+                let pagesResult = await Task.detached { // Explicitly detach
+                    // Need access *within* the detached task
+                    let url = scopedURL
+                    let type = item.type
+                    var generatedPages: [PDFPage] = []
                     
-                    if let realContent = content, !realContent.isEmpty {
-                        // Create PDF using MainActor instead of semaphore
-                        var pageData: Data? = nil
-                        
-                        await MainActor.run {
-                            pageData = self.createPDFPageDataFromText(content: realContent, title: item.name)
-                        }
-                        
-                        if let realPageData = pageData,
-                           let pdfDocument = PDFDocument(data: realPageData),
-                           let page = pdfDocument.page(at: 0)?.copy() as? PDFPage {
-                            generatedPages.append(page)
-                        } else {
-                            DispatchQueue.main.async {
-                                Self.logger.warning("Failed to create PDF page from text content: \(item.name)")
-                                self.criticalErrors.append("Cannot convert text: \(item.name)")
+                    // Make sure we don't throw from within the autoreleasepool itself
+                    do {
+                        try autoreleasepool {
+                            if type?.conforms(to: .pdf) == true {
+                                if let sourceDoc = PDFDocument(url: url) {
+                                    for i in 0..<sourceDoc.pageCount {
+                                        if let page = sourceDoc.page(at: i)?.copy() as? PDFPage {
+                                            generatedPages.append(page)
+                                        }
+                                    }
+                                } else {
+                                    throw ReadError.pdfOpenFailed
+                                }
+                            } else if type?.conforms(to: .image) == true {
+                                if let image = NSImage(contentsOf: url),
+                                   let page = self.createPDFPageFromImageNonisolated(image: image, title: item.name) {
+                                    generatedPages.append(page)
+                                } else {
+                                    throw ReadError.decodingFailed
+                                }
+                            } else if type?.conforms(to: .text) == true || type?.conforms(to: .sourceCode) == true || type?.conforms(to: .data) == true {
+                                do {
+                                    let data = try Data(contentsOf: url)
+                                    let fallback: String.Encoding = .utf8
+                                    
+                                    // Use a synchronous encoding detection here
+                                    let detectedEncoding = {
+                                        var nsString: NSString?
+                                        let detected = NSString.stringEncoding(for: data, encodingOptions: nil, convertedString: &nsString, usedLossyConversion: nil)
+                                        return detected != 0 ? String.Encoding(rawValue: detected) : fallback
+                                    }()
+                                    
+                                    if let content = String(data: data, encoding: detectedEncoding), !content.isEmpty {
+                                        if let page = self.createPDFPageFromTextNonisolated(content: content, title: item.name) {
+                                            generatedPages.append(page)
+                                        } else {
+                                            throw ReadError.decodingFailed
+                                        }
+                                    } else if String(data: data, encoding: fallback) == nil {
+                                        throw ReadError.decodingFailed
+                                    }
+                                } catch {
+                                    throw error
+                                }
+                            } else {
+                                throw ReadError.unsupportedType
                             }
                         }
+                    } catch {
+                        throw error
+                    }
+                    
+                    return generatedPages
+                }.result // Get result (success with pages or failure with error)
+                
+                // Stop accessing after detached task completes
+                if accessStarted { scopedURL.stopAccessingSecurityScopedResource() }
+                
+                // Process result back on MainActor
+                switch pagesResult {
+                case .success(let pages):
+                    if !pages.isEmpty {
+                        for page in pages { document.insert(page, at: document.pageCount) }
                     } else {
-                        DispatchQueue.main.async {
-                            Self.logger.warning("Failed to create PDF page from text content: \(item.name)")
-                            self.criticalErrors.append("Cannot convert text: \(item.name)")
+                        // No pages generated, but no error thrown (e.g., empty text file) - potentially add skip note
+                        Self.logger.debug("No PDF pages generated for \(item.name) (potentially empty or unsupported within type)")
+                        // skippedFilesInfo.append(.init(name: item.name, reason: "No content generated")) // Optional skip note
+                    }
+                case .failure(let error):
+                    let errorReason: String
+                    if let readError = error as? ReadError {
+                        switch readError {
+                        case .pdfOpenFailed:
+                            errorReason = "Cannot open source PDF"
+                        case .decodingFailed:
+                            errorReason = "Cannot decode content"
+                        case .unsupportedType:
+                            errorReason = "Unsupported type for PDF"
+                        @unknown default:
+                            errorReason = "Unknown error: \(readError)"
                         }
+                    } else {
+                        errorReason = "Error generating PDF page (\(error.localizedDescription))"
                     }
-                } catch {
-                    DispatchQueue.main.async {
-                        Self.logger.warning("Error processing text file: \(item.name)")
-                        self.criticalErrors.append("Error processing: \(item.name)")
-                    }
+                    Self.logger.error("Failed to create PDF pages for \(item.name): \(errorReason)")
+                    // Use skippedFilesInfo for non-critical PDF generation errors
+                    skippedFilesInfo.append(.init(name: item.name, reason: errorReason))
+                    // Don't add to criticalErrors unless it's a fundamental access issue handled by secureAccess
                 }
+            } catch {
+                // Error outside the detached task
+                Self.logger.error("Error in PDF processing for \(item.name): \(error.localizedDescription)")
+                skippedFilesInfo.append(.init(name: item.name, reason: "Processing error: \(error.localizedDescription)"))
+                // Stop resource access if still open from earlier error
+                if accessStarted { scopedURL.stopAccessingSecurityScopedResource() }
             }
-            // Handle unsupported types
-            else {
-                DispatchQueue.main.async {
-                    Self.logger.warning("Unsupported file type for PDF generation: \(item.name)")
-                    self.criticalErrors.append("Unsupported type for PDF: \(item.name)")
+        }
+        
+        // Update final PDF state
+        await MainActor.run {
+            if document.pageCount > 0 {
+                self.generatedPDF = document
+            } else {
+                self.generatedPDF = nil
+                // If no pages AND no critical errors occurred, but skips happened, indicate via state?
+                if criticalErrors.isEmpty && !skippedFilesInfo.isEmpty {
+                    self.processingState = .error("PDF generation skipped some files.") // Use error state to show skip button
+                } else if criticalErrors.isEmpty {
+                    self.processingState = .error("No content found to generate PDF.") // Or idle?
                 }
+                // If critical errors exist, state is already handled
             }
-            
-            // Wait a short time for any tasks to finish
-            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-            
-            return generatedPages.isEmpty ? nil : generatedPages
-        }.value
+        }
     }
 
-    // PDF Page Creation Helpers
-    private func createPDFPageDataFromImage(image: NSImage, title: String) -> Data? {
-        let pageBounds = CGRect(x: 0, y: 0, width: 595, height: 842) // A4
+    // MARK: - PDF Helpers -
+    
+    // Nonisolated version for use with detached tasks
+    private nonisolated func createPDFPageFromImageNonisolated(image: NSImage, title: String) -> PDFPage? {
+        let pageBounds = CGRect(x: 0, y: 0, width: 595, height: 842) 
         let margin: CGFloat = 40
         let pdfData = NSMutableData()
         
-        var mediaBox = pageBounds
-        guard let consumer = CGDataConsumer(data: pdfData as CFMutableData),
-              let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { 
-            return nil 
+        var mediaBox = pageBounds  // Make it mutable
+        guard let consumer = CGDataConsumer(data: pdfData),
+              let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+            return nil
         }
-
+        
+        // Fix beginPDFPage parameter
         context.beginPDFPage(nil)
         context.setFillColor(NSColor.white.cgColor)
         context.fill(pageBounds)
-        drawHeader(title: title, context: context, bounds: pageBounds, margin: margin)
-
+        
+        drawHeaderNonisolated(title: title, context: context, bounds: pageBounds, margin: margin)
+        
         let imageSize = image.size
         let drawingRect = pageBounds.insetBy(dx: margin, dy: margin + 20)
         let aspectWidth = drawingRect.width / imageSize.width
@@ -547,28 +616,30 @@ class AppViewModel: ObservableObject {
         let imageOriginX = drawingRect.origin.x + (drawingRect.width - scaledWidth) / 2
         let imageOriginY = drawingRect.origin.y + (drawingRect.height - scaledHeight) / 2
         let targetRect = CGRect(x: imageOriginX, y: imageOriginY, width: scaledWidth, height: scaledHeight)
-
+        
         if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
             context.draw(cgImage, in: targetRect)
         }
-
+        
         context.endPDFPage()
         context.closePDF()
-
-        return pdfData as Data
+        
+        guard let pdfDocument = PDFDocument(data: pdfData as Data) else { return nil }
+        return pdfDocument.page(at: 0)?.copy() as? PDFPage
     }
-
-    private func createPDFPageDataFromText(content: String, title: String) -> Data? {
-        let pageBounds = CGRect(x: 0, y: 0, width: 595, height: 842) // A4
+    
+    // Nonisolated version for use with detached tasks
+    private nonisolated func createPDFPageFromTextNonisolated(content: String, title: String) -> PDFPage? {
+        let pageBounds = CGRect(x: 0, y: 0, width: 595, height: 842)
         let margin: CGFloat = 40
         let pdfData = NSMutableData()
         
-        var mediaBox = pageBounds
-        guard let consumer = CGDataConsumer(data: pdfData as CFMutableData),
-              let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { 
-            return nil 
+        var mediaBox = pageBounds  // Make it mutable
+        guard let consumer = CGDataConsumer(data: pdfData),
+              let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+            return nil
         }
-
+        
         let paragraphStyle = NSMutableParagraphStyle()
         paragraphStyle.lineSpacing = 1.5
         paragraphStyle.paragraphSpacing = 6
@@ -578,73 +649,240 @@ class AppViewModel: ObservableObject {
             .paragraphStyle: paragraphStyle
         ]
         let attributedString = NSAttributedString(string: content, attributes: attributes)
-
+        
+        // Fix beginPDFPage parameter
         context.beginPDFPage(nil)
         context.setFillColor(NSColor.white.cgColor)
         context.fill(pageBounds)
-        drawHeader(title: title, context: context, bounds: pageBounds, margin: margin)
-
+        
+        drawHeaderNonisolated(title: title, context: context, bounds: pageBounds, margin: margin)
+        
         let textFrameRect = CGRect(x: margin, y: margin, width: pageBounds.width - 2 * margin, height: pageBounds.height - 2 * margin - 20)
-
-        // Simple single-page drawing (will truncate)
         attributedString.draw(in: textFrameRect)
-
-        // Proper multi-page requires CTFramesetter logic here, similar to FileProcessor refactor
-
+        
         context.endPDFPage()
         context.closePDF()
-
-        return pdfData as Data
+        
+        guard let pdfDocument = PDFDocument(data: pdfData as Data) else { return nil }
+        return pdfDocument.page(at: 0)?.copy() as? PDFPage
+    }
+    
+    // Nonisolated version for use with detached tasks
+    private nonisolated func drawHeaderNonisolated(title: String, context: CGContext, bounds: CGRect, margin: CGFloat) {
+        let headerAttributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 9, weight: .light),
+            .foregroundColor: NSColor.darkGray
+        ]
+        let headerString = NSAttributedString(string: title, attributes: headerAttributes)
+        let headerHeight: CGFloat = 15
+        let headerRect = CGRect(x: margin, y: bounds.height - margin - headerHeight + 5,
+                              width: bounds.width - 2 * margin, height: headerHeight)
+        
+        context.saveGState()
+        context.textMatrix = .identity
+        headerString.draw(in: headerRect)
+        context.restoreGState()
+        
+        context.setStrokeColor(NSColor.lightGray.cgColor)
+        context.setLineWidth(0.5)
+        context.move(to: CGPoint(x: margin, y: bounds.height - margin - headerHeight))
+        context.addLine(to: CGPoint(x: bounds.width - margin, y: bounds.height - margin - headerHeight))
+        context.strokePath()
+    }
+    
+    // MainActor versions for UI context
+    @MainActor private func createPDFPageFromImage(image: NSImage, title: String) -> PDFPage? {
+        return createPDFPageFromImageNonisolated(image: image, title: title)
+    }
+    
+    @MainActor private func createPDFPageFromText(content: String, title: String) -> PDFPage? {
+        return createPDFPageFromTextNonisolated(content: content, title: title)
+    }
+    
+    @MainActor private func drawHeader(title: String, context: CGContext, bounds: CGRect, margin: CGFloat) {
+        drawHeaderNonisolated(title: title, context: context, bounds: bounds, margin: margin)
+    }
+    
+    // MARK: - String Encoding Helper -
+    
+    private static func detectEncoding(data: Data, fallback: inout String.Encoding) async -> String.Encoding {
+        var nsString: NSString?
+        let detected = NSString.stringEncoding(for: data, encodingOptions: nil, convertedString: &nsString, usedLossyConversion: nil)
+        if detected != 0 {
+            fallback = String.Encoding(rawValue: detected)
+            return fallback
+        }
+        return fallback
     }
 
-    private func drawHeader(title: String, context: CGContext, bounds: CGRect, margin: CGFloat) {
-         let headerAttributes: [NSAttributedString.Key: Any] = [
-             .font: NSFont.systemFont(ofSize: 9, weight: .light),
-             .foregroundColor: NSColor.darkGray
-         ]
-         let headerString = NSAttributedString(string: title, attributes: headerAttributes)
-         let headerHeight: CGFloat = 15
-         let headerRect = CGRect(x: margin, y: bounds.height - margin - headerHeight + 5,
-                                 width: bounds.width - 2 * margin, height: headerHeight)
-         context.saveGState()
-         context.textMatrix = .identity
-         headerString.draw(in: headerRect)
-         context.restoreGState()
-         // Optional Line
-         context.setStrokeColor(NSColor.lightGray.cgColor)
-         context.setLineWidth(0.5)
-         context.move(to: CGPoint(x: margin, y: bounds.height - margin - headerHeight))
-         context.addLine(to: CGPoint(x: bounds.width - margin, y: bounds.height - margin - headerHeight))
-         context.strokePath()
-     }
+    // MARK: - Processing Control (Cancellable Task) -
 
+    func triggerProcessing() {
+        cancelProcessing() // Cancel previous task if any
 
-    // MARK: - Helpers -
+        guard !fileTree.isEmpty else {
+            Self.logger.info("No files in tree to process.")
+            clearAll(keepFiles: true) // Clear results but keep files
+            return
+        }
+        guard processingState == .idle || processingState == .preparing || processingState == .success("") || processingState == .error("") else {
+            Self.logger.warning("Ignoring triggerProcessing request while busy (\(String(describing: self.processingState)))")
+            return
+        }
 
-    // Flattens the tree into a list of items (pre-order traversal)
-     private func flattenTree(items: [FileItem]) -> [FileItem] {
-         var flattened: [FileItem] = []
-         for item in items {
-             flattened.append(item)
-             if let children = item.children {
-                 flattened.append(contentsOf: flattenTree(items: children))
+        let selectedItems = flattenTree(items: fileTree).filter { $0.isSelected && !$0.isDirectory }
+        guard !selectedItems.isEmpty else {
+             Self.logger.info("No files selected for processing.")
+             // Clear results, show appropriate message
+             promptChunks = []
+             generatedPrompt = ""
+             generatedPDF = nil
+             skippedFilesInfo = []
+             processingState = .idle // Or maybe a specific "nothing selected" state?
+             return
+        }
+
+        processingState = .preparing // Indicate prep
+        criticalErrors.removeAll() // Clear errors for this run
+        skippedFilesInfo.removeAll()
+        promptChunks = [] // Clear previous chunks for prompt mode
+
+        Self.logger.info("Starting processing task for \(selectedItems.count) items in mode \(self.currentMode.rawValue)")
+
+        // Store and manage the processing task
+        processingTask = Task {
+             do {
+                 // Short delay to allow UI to update to 'preparing' state
+                 try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+                 guard processingState != .cancelling else { return }
+
+                 processingState = .processing(0, "Starting...") // Now actually processing
+
+                 switch currentMode {
+                 case .prompt:
+                     await generatePrompt(selectedItems: selectedItems)
+                 case .pdf:
+                     await generatePDF(selectedItems: selectedItems)
+                 }
+
+                 // Check if cancelled *during* processing
+                 guard processingState != .cancelling else { return }
+
+                 // Final state based on errors
+                 if criticalErrors.isEmpty {
+                      processingState = .success("Processing complete.")
+                      Self.logger.info("Processing finished successfully.")
+                 } else {
+                      processingState = .error("Completed with \(criticalErrors.count) critical error(s).")
+                      Self.logger.warning("Processing finished with errors.")
+                 }
+
+             } catch is CancellationError {
+                 Self.logger.info("Processing task cancelled.")
+                 // State is likely already .cancelling, reset fully
+                  clearAll(keepFiles: true)
+             } catch {
+                 Self.logger.error("Unexpected error during processing task: \(error.localizedDescription)")
+                 criticalErrors.append("An unexpected processing error occurred.")
+                 processingState = .error("Processing failed unexpectedly.")
              }
+        }
+    }
+
+    func cancelProcessing() {
+        if let task = processingTask, !task.isCancelled {
+            Self.logger.info("Cancelling processing task.")
+            processingState = .cancelling
+            task.cancel()
+            processingTask = nil
+             // Optionally reset state more fully here or let the cancelled task handle it
+             // clearAll(keepFiles: true) might be too aggressive if user wants to retry
+             // Resetting to idle after a short delay might be better
+             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                 if self.processingState == .cancelling {
+                      self.processingState = .idle
+                 }
+             }
+        }
+    }
+
+    // MARK: - Bookmark & Security Helpers (CRITICAL) -
+
+    /// Attempts to secure access to a URL using stored bookmark data.
+    /// Returns the scoped URL and a Bool indicating if access was started (needs stopping).
+    private func secureAccess(for originalUrl: URL) async -> (URL, Bool)? {
+         guard let bookmarkData = fileBookmarks[originalUrl] else {
+             Self.logger.error("Access Error (\(originalUrl.lastPathComponent)): No bookmark data found. App may need restart or re-add file.")
+             await MainActor.run { criticalErrors.append("Permission Error: Cannot find security info for \(originalUrl.lastPathComponent).") }
+             return nil
          }
-         return flattened
+         return await secureAccess(bookmarkData: bookmarkData, originalUrlHint: originalUrl)
      }
 
+    /// Low-level bookmark resolution and access start.
+     private func secureAccess(bookmarkData: Data, originalUrlHint: URL? = nil) async -> (URL, Bool)? {
+         var isStale = false
+         do {
+             // Resolve the bookmark
+              let scopedURL = try URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
+
+             if isStale {
+                  Self.logger.warning("Bookmark is stale for \(originalUrlHint?.lastPathComponent ?? "Unknown"). Attempting to refresh.")
+                  // Try to create a new bookmark from the resolved URL
+                  if let newBookmarkData = try? scopedURL.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil),
+                     let originalUrl = originalUrlHint { // Need original URL to update dictionary
+                       await MainActor.run { fileBookmarks[originalUrl] = newBookmarkData } // Update stored bookmark
+                      Self.logger.info("Successfully refreshed stale bookmark.")
+                  } else {
+                       Self.logger.error("Failed to refresh stale bookmark.")
+                       // Proceed with stale access, but log it
+                  }
+             }
+
+             // Start accessing the resource
+             let accessStarted = scopedURL.startAccessingSecurityScopedResource()
+             if !accessStarted {
+                 Self.logger.error("Access Error (\(originalUrlHint?.lastPathComponent ?? "Unknown")): Failed to start secure access even after resolving bookmark.")
+                  await MainActor.run { criticalErrors.append("Permission Error: Cannot access \(originalUrlHint?.lastPathComponent ?? "file") after resolving.") }
+                 return nil
+             }
+              Self.logger.debug("Successfully started secure access for \(scopedURL.lastPathComponent)")
+             return (scopedURL, true) // Return scoped URL and flag that access started
+
+         } catch {
+             Self.logger.error("Bookmark Error (\(originalUrlHint?.lastPathComponent ?? "Unknown")): Failed to resolve bookmark: \(error.localizedDescription)")
+             await MainActor.run { criticalErrors.append("Permission Error: Cannot resolve security info for \(originalUrlHint?.lastPathComponent ?? "file").") }
+             // Handle specific bookmark errors if needed (e.g., file moved)
+             return nil
+         }
+     }
+
+    // MARK: - Tree Helpers -
+    
+    // Flattens the tree into a list of items (pre-order traversal)
+    private func flattenTree(items: [FileItem]) -> [FileItem] {
+        var flattened: [FileItem] = []
+        for item in items {
+            flattened.append(item)
+            if let children = item.children {
+                flattened.append(contentsOf: flattenTree(items: children))
+            }
+        }
+        return flattened
+    }
+    
     // Generates ASCII tree string for selected items
     private func generateTreeString(items: [FileItem], prefix: String = "", isRoot: Bool = true) -> String {
         var output = ""
         for (index, item) in items.enumerated() {
-             guard item.isSelected else { continue } // Only include selected items in the tree string
-
+            guard item.isSelected else { continue } // Only include selected items in the tree string
+            
             let isLast = index == items.count - 1
             let connector = isRoot ? "" : (isLast ? "└── " : "├── ")
             let nameSuffix = item.isDirectory ? "/" : ""
-
+            
             output += prefix + connector + item.name + nameSuffix + "\n"
-
+            
             if let children = item.children, !children.isEmpty {
                 let childPrefix = prefix + (isRoot ? "" : (isLast ? "    " : "│   "))
                 output += generateTreeString(items: children, prefix: childPrefix, isRoot: false)

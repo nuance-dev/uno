@@ -90,18 +90,41 @@ struct ContentView: View {
     private func loadURL(from provider: NSItemProvider) async -> URL? {
         do {
             let item = try await provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier)
-            if let bookmarkData = item as? Data {
-                var isStale = false
-                if let scopedURL = try? URL(resolvingBookmarkData: bookmarkData, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale) {
-                    _ = scopedURL.startAccessingSecurityScopedResource() // Start access! Be careful.
-                    return scopedURL
-                }
-            }
+            
+            // Handle direct URL data (not bookmark)
             if let urlData = item as? Data,
                let urlString = String(data: urlData, encoding: .utf8)?.removingPercentEncoding,
                let url = URL(string: urlString) {
+                logger.debug("Received direct URL: \(url.lastPathComponent)")
                 return url
             }
+            
+            // Handle bookmark data (with proper error handling)
+            if let bookmarkData = item as? Data {
+                do {
+                    var isStale = false
+                    let url = try URL(resolvingBookmarkData: bookmarkData, 
+                                      options: .withSecurityScope,
+                                      relativeTo: nil, 
+                                      bookmarkDataIsStale: &isStale)
+                    
+                    logger.debug("Resolved URL from bookmark: \(url.lastPathComponent), stale: \(isStale)")
+                    // Don't start accessing now - let the ViewModel handle it properly
+                    // The access start/stop needs to be tightly paired in processing
+                    return url
+                } catch {
+                    logger.error("Invalid bookmark data: \(error.localizedDescription)")
+                    // Continue to try other parsing methods - don't return nil yet
+                }
+            }
+            
+            // Last resort for NSURLs
+            if let url = item as? URL {
+                logger.debug("Received URL object directly: \(url.lastPathComponent)")
+                return url
+            }
+            
+            logger.warning("Could not parse drop item as URL: \(String(describing: item))")
             return nil
         } catch {
             logger.error("Error loading item: \(error.localizedDescription)")
@@ -209,29 +232,53 @@ struct ProcessingView: View {
 
     @ViewBuilder
     private var previewArea: some View {
-        ZStack {
-            // Actual Preview Content
-            Group {
+        Group {
+            if case .scanning = viewModel.processingState {
+                ScanningView()
+            } else if case .preparing = viewModel.processingState {
+                PreparingView()
+            } else if case .processing = viewModel.processingState {
+                ZStack(alignment: .topTrailing) {
+                    // Regular content
+                    Group {
+                        if viewModel.currentMode == .prompt {
+                            PromptPreview(viewModel: viewModel)
+                        } else {
+                            PDFPreview(
+                                pdfDocument: viewModel.generatedPDF,
+                                isLoading: viewModel.processingState.isProcessing,
+                                skippedFiles: viewModel.skippedFilesInfo,
+                                viewModel: viewModel
+                            )
+                        }
+                    }
+                    
+                    // Cancel button
+                    Button {
+                        viewModel.cancelProcessing()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark.circle.fill")
+                            .labelStyle(.iconOnly)
+                            .font(.system(size: 16))
+                            .foregroundStyle(.secondary)
+                            .padding(8)
+                    }
+                    .buttonStyle(.plain)
+                    .contentShape(Circle())
+                    .help("Cancel current operation")
+                }
+            } else {
+                // Not scanning and not processing - regular content
                 if viewModel.currentMode == .prompt {
-                     PromptPreview(
-                        content: viewModel.generatedPrompt,
-                        isLoading: viewModel.processingState.isProcessing
-                     )
-                 } else {
-                     PDFPreview(
+                    PromptPreview(viewModel: viewModel)
+                } else {
+                    PDFPreview(
                         pdfDocument: viewModel.generatedPDF,
                         isLoading: viewModel.processingState.isProcessing,
                         skippedFiles: viewModel.skippedFilesInfo,
                         viewModel: viewModel
-                     )
-                 }
-            }
-            .transition(.opacity.animation(.easeInOut))
-
-
-            // Processing Indicator (Centered Overlay)
-            if viewModel.processingState.isProcessing {
-                processingIndicator
+                    )
+                }
             }
         }
     }
@@ -249,52 +296,104 @@ struct ProcessingView: View {
 // MARK: - Preview Components
 
 struct PromptPreview: View {
-    let content: String
-    let isLoading: Bool
-    @State private var isCopied: Bool = false
-    @Environment(\.colorScheme) var colorScheme
-
+    @ObservedObject var viewModel: AppViewModel
+    @State private var showCopiedMessage = false
+    @State private var skippedFilesShown = false
+    
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            // Use TextEditor directly for scrollable, selectable text
-            TextEditor(text: .constant(content))
-                .font(.system(size: 13, design: .monospaced))
-                .padding(EdgeInsets(top: 10, leading: 15, bottom: 10, trailing: 45))
-                .background(.clear)
-                .foregroundStyle(.primary)
-                .scrollContentBackground(.hidden)
-                .opacity(content.isEmpty && !isLoading ? 0 : 1)
-
-
-            // Placeholder when empty
-             if content.isEmpty && !isLoading {
-                 Text("Prompt will appear here.")
-                     .font(.callout)
-                     .foregroundStyle(.secondary)
-                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-             }
-
-
-            // Minimal Copy Button
-            Button { copyToClipboard() } label: {
-                Image(systemName: isCopied ? "checkmark" : "doc.on.doc")
+        VStack(spacing: 0) {
+            // Preview Area
+            ZStack(alignment: .center) {
+                ScrollView {
+                    if viewModel.promptChunks.isEmpty && !viewModel.processingState.isProcessing {
+                        Text("Prompt preview will appear here.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                            .padding(.vertical, 40)
+                    } else {
+                        VStack(alignment: .leading, spacing: 0) {
+                            TextEditor(text: .constant(viewModel.promptChunks.joined()))
+                                .font(.system(size: 12, design: .monospaced))
+                                .scrollContentBackground(.hidden)
+                                .padding(.horizontal, 4)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                    }
+                }
+                
+                // "Copied" Feedback
+                if showCopiedMessage {
+                    Text("Copied to Clipboard")
+                        .font(.caption)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule()
+                                .fill(Color.accentColor)
+                                .shadow(radius: 3)
+                        )
+                        .transition(.opacity.combined(with: .scale))
+                }
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(isCopied ? .green : .secondary)
-            .padding(12)
-            .opacity(content.isEmpty ? 0 : 1)
-            .animation(.easeInOut, value: isCopied)
-            .disabled(content.isEmpty)
+            
+            if !viewModel.skippedFilesInfo.isEmpty && !skippedFilesShown {
+                // Notification about skipped files
+                Button {
+                    skippedFilesShown = true
+                } label: {
+                    Text("\(viewModel.skippedFilesInfo.count) file(s) were skipped")
+                        .font(.caption)
+                    +
+                    Text(" (click for details)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 4)
+                .background(.thinMaterial)
+                .sheet(isPresented: $skippedFilesShown) {
+                    SkippedFilesPopover(skippedFiles: viewModel.skippedFilesInfo)
+                        .frame(minWidth: 300, minHeight: 200)
+                        .padding()
+                }
+            }
+            
+            Divider()
+            
+            // Copy Button
+            HStack {
+                Spacer()
+                Button {
+                    copyPromptToClipboard()
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                        .symbolEffect(.bounce, value: showCopiedMessage)
+                }
+                .keyboardShortcut("c", modifiers: [.command])
+                .disabled(viewModel.promptChunks.isEmpty)
+                .padding(8)
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-
-     private func copyToClipboard() {
+    
+    private func copyPromptToClipboard() {
+        let combinedPrompt = viewModel.promptChunks.joined()
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(content, forType: .string)
-        isCopied = true
-        Task {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            await MainActor.run { isCopied = false }
+        NSPasteboard.general.setString(combinedPrompt, forType: .string)
+        
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+            showCopiedMessage = true
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation {
+                showCopiedMessage = false
+            }
         }
     }
 }
@@ -504,11 +603,11 @@ struct SettingsPopover: View {
     }
 
      private func triggerReprocess() {
-          Task { await viewModel.processFiles() }
+          Task { await viewModel.triggerProcessing() }
      }
 
      private func triggerReprocessDebounced() {
-         Task { await viewModel.processFiles() }
+         Task { await viewModel.triggerProcessing() }
      }
 }
 
@@ -543,19 +642,26 @@ struct StatusBar: View {
                  } else {
                       Image(systemName: "checkmark.circle")
                         .foregroundStyle(.green.opacity(0.7))
+                      Text("Ready")
                  }
              case .scanning(let folderName):
                  ProgressView().controlSize(.small).padding(.trailing, 4)
                  Text("Scanning \(folderName)...")
-             case .processing(let progress, _):
+             case .preparing:
+                 ProgressView().controlSize(.small).padding(.trailing, 4)
+                 Text("Preparing...")
+             case .processing(let progress, let step):
                  ProgressView(value: progress).controlSize(.small).frame(width: 60).padding(.trailing, 4)
-                 Text("\(progress * 100, specifier: "%.0f")%").monospacedDigit()
-             case .error(_):
-                  Label("Error", systemImage: "exclamationmark.triangle")
+                 Text("\(progress * 100, specifier: "%.0f")% - \(step)").monospacedDigit()
+             case .cancelling:
+                 ProgressView().controlSize(.small).padding(.trailing, 4)
+                 Text("Cancelling...").foregroundStyle(.orange)
+             case .error(let message):
+                  Label(message, systemImage: "exclamationmark.triangle")
                      .foregroundStyle(.red)
                      .onTapGesture { showErrorPopover = true }
-             case .success(_):
-                 Label("Complete", systemImage: "checkmark.circle.fill")
+             case .success(let message):
+                 Label(message, systemImage: "checkmark.circle.fill")
                      .foregroundStyle(.green)
              }
         }
@@ -611,5 +717,41 @@ struct EnhancedPDFKitView: NSViewRepresentable {
     func updateNSView(_ pdfView: PDFView, context: Context) {
         pdfView.document = pdfDocument
         pdfView.scaleFactor = zoomLevel
+    }
+}
+
+struct ScanningView: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .controlSize(.large)
+                .scaleEffect(1.5)
+            
+            Text("Scanning Files...")
+                .font(.headline)
+            
+            Text("Building file hierarchy")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct PreparingView: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .controlSize(.large)
+                .scaleEffect(1.5)
+            
+            Text("Preparing...")
+                .font(.headline)
+            
+            Text("Setting up processor")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 } 
