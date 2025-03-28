@@ -1,41 +1,44 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 
 @main
 struct UnoApp: App {
-    @AppStorage("isDarkMode") private var isDarkMode = false
     @StateObject private var updater = UpdateChecker()
     @State private var showingUpdateSheet = false
     
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .preferredColorScheme(isDarkMode ? .dark : .light)
-                .background(WindowAccessor())
+                .environmentObject(updater)
                 .sheet(isPresented: $showingUpdateSheet) {
                     UpdateView(updater: updater)
                 }
-                .onAppear {
-                    updater.checkForUpdates()
-                    updater.onUpdateAvailable = {
+                .task {
+                    await updater.checkForUpdates()
+                    if updater.updateAvailable {
                         showingUpdateSheet = true
                     }
+                    updater.scheduleRecurringChecks()
                 }
+                .background(VisualEffectBackground())
+                .preferredColorScheme(.dark) // Optional: Force dark mode for modern look
         }
-        .windowStyle(HiddenTitleBarWindowStyle())
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates...") {
-                    showingUpdateSheet = true
-                    updater.checkForUpdates()
+                    Task {
+                        await updater.checkForUpdates()
+                        showingUpdateSheet = true
+                    }
                 }
                 .keyboardShortcut("U", modifiers: [.command])
                 
-                if updater.updateAvailable {
+                if updater.updateAvailable, let url = updater.downloadURL {
                     Button("Download Update") {
-                        if let url = updater.downloadURL {
-                            NSWorkspace.shared.open(url)
-                        }
+                        NSWorkspace.shared.open(url)
                     }
                 }
                 
@@ -43,4 +46,17 @@ struct UnoApp: App {
             }
         }
     }
+}
+
+// Background effect that works with transparent windows
+struct VisualEffectBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.material = .underWindowBackground
+        return view
+    }
+    
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
