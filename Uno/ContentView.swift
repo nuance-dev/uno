@@ -170,17 +170,20 @@ struct ProcessingView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Minimal Top Bar
-            HStack {
-                modeSwitcher
-                Spacer()
-                fileInfoAndClear
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            .background(.ultraThinMaterial)
+            // Conditionally show controls based on fileTree, not viewState
+            if !viewModel.fileTree.isEmpty {
+                // Minimal Top Bar
+                HStack {
+                    modeSwitcher
+                    Spacer()
+                    fileInfoAndClear
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.ultraThinMaterial)
 
-            Divider()
+                Divider()
+            }
 
             // Main Preview Area (occupies rest of space)
             previewArea
@@ -322,6 +325,7 @@ struct PromptPreview: View {
                         .padding(12)
                     }
                 }
+                .background(Color(.textBackgroundColor).opacity(0.4))
                 
                 // "Copied" Feedback
                 if showCopiedMessage {
@@ -425,6 +429,7 @@ struct PDFPreview: View {
                  }
              }
              .frame(maxWidth: .infinity, maxHeight: .infinity)
+             .background(Color(.textBackgroundColor).opacity(0.4))
 
             // Floating Control Bar at the Bottom
             if pdfDocument != nil {
@@ -700,25 +705,6 @@ struct CriticalErrorsPopover: View {
 }
 
 // MARK: - PDF Kit Component
-struct EnhancedPDFKitView: NSViewRepresentable {
-    let pdfDocument: PDFDocument
-    @Binding var zoomLevel: CGFloat
-    
-    func makeNSView(context: Context) -> PDFView {
-        let pdfView = PDFView()
-        pdfView.document = pdfDocument
-        pdfView.autoScales = true
-        pdfView.displayMode = .singlePage
-        pdfView.displayDirection = .vertical
-        pdfView.backgroundColor = .clear
-        return pdfView
-    }
-    
-    func updateNSView(_ pdfView: PDFView, context: Context) {
-        pdfView.document = pdfDocument
-        pdfView.scaleFactor = zoomLevel
-    }
-}
 
 struct ScanningView: View {
     var body: some View {
